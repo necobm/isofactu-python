@@ -1,0 +1,109 @@
+name: isofactu
+
+services:
+  db:
+    container_name: isofactu-db
+    image: postgres:${POSTGRES_VERSION:-17}-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-isofactu}
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vG7r9yL2qP4sZ8wHPt3KcR1u}
+    ports:
+      # Exposed on 5433 on the host (not 5432) to avoid clashing with a local PostgreSQL.
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-d", "${POSTGRES_DB:-isofactu}", "-U", "${POSTGRES_USER:-app}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    volumes:
+      - database_data:/var/lib/postgresql/data:rw
+
+  # FastAPI backend. Runs Alembic migrations on start-up, then serves the API under /api
+  # and the built frontend (./public) as a SPA on the same origin.
+  #
+  # Development set-up: the image includes pytest/ruff, ./backend is bind-mounted so code
+  # changes are picked up live (--reload) and tests/linters run against your working copy:
+  #   docker compose exec backend pytest
+  #   docker compose exec backend ruff check .
+  backend:
+    container_name: isofactu-backend
+    build:
+      context: ./backend
+      args:
+        INSTALL_DEV: ${BACKEND_INSTALL_DEV:-true}
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-vG7r9yL2qP4sZ8wHPt3KcR1u}@db:5432/${POSTGRES_DB:-isofactu}
+      PUBLIC_DIR: /app/public
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-1}
+      # Tool caches outside the bind mount (works whatever the host uid is)
+      PYTEST_ADDOPTS: -o cache_dir=/tmp/pytest-cache
+      RUFF_CACHE_DIR: /tmp/ruff-cache
+      LOAD_FIXTURES: ${LOAD_FIXTURES:-0}
+      FIXTURES_INVOICES: ${FIXTURES_INVOICES:-20}
+      FIXTURES_SEED: ${FIXTURES_SEED:-42}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - ./backend:/app/backend
+      - ./public:/app/public:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      frontend-build:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    develop:
+      watch:
+        - action: rebuild
+          path: ./backend/requirements.txt
+        - action: rebuild
+          path: ./backend/requirements-dev.txt
+
+  # One-shot job: compiles the React app (Vite) into ./public, then exits.
+  # Also the place to run frontend tooling without Node on the host:
+  #   docker compose run --rm --no-deps frontend-build npm run lint
+  frontend-build:
+    container_name: isofactu-frontend-build
+    image: node:${NODE_VERSION:-22}-alpine
+    working_dir: /app/frontend
+    environment:
+      CI: "true"
+    volumes:
+      - ./frontend:/app/frontend
+      - ./public:/app/public
+      - frontend_node_modules:/app/frontend/node_modules
+    command: sh -c "npm ci --no-audit --no-fund && npm run build"
+
+  # Vite dev server with HMR (optional): `docker compose --profile dev up`
+  # Serves the SPA on http://localhost:5173 and proxies /api to the backend container.
+  frontend:
+    container_name: isofactu-frontend
+    profiles: ["dev"]
+    image: node:${NODE_VERSION:-22}-alpine
+    working_dir: /app/frontend
+    environment:
+      VITE_API_PROXY_TARGET: http://backend:8000
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    volumes:
+      - ./frontend:/app/frontend
+      - ./public:/app/public
+      - frontend_node_modules:/app/frontend/node_modules
+    command: sh -c "npm ci --no-audit --no-fund && npm run dev"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  database_data:
+  frontend_node_modules:
