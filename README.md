@@ -2,6 +2,60 @@
 
 Invoice management application for freelancers and SMEs, with a Spanish tax context (VAT, retention, NIF/CIF identification).
 
+The goal is a B2B SaaS that gives Spanish *autónomos* a single place to manage their invoices —
+both issued (income) and received (expenses) — plus tools to keep track of and forecast their
+expenses and taxes (VAT, IRPF).
+
+## Roadmap
+
+### Where we are today
+
+The core of **issued invoices** works end to end (API + UI):
+
+- [x] Create, edit and list invoices with a `DRAFT` → `ISSUED` lifecycle. Drafts are editable and
+      numberless; issued invoices are immutable and get the next sequential number of their serial.
+- [x] Concepts with description, quantity, unit price and per-line VAT rate; invoice-level IRPF
+      retention; subtotal / tax / retention / total computed server-side with exact decimals.
+- [x] Issue date, due date (validated), payment method and free-text notes.
+- [x] Pick the invoice's client from stored subjects (search by name or NIF/CIF).
+- [x] Invoice list filtered by state, with detail view.
+- [x] Docker-based dev workflow, migrations, fixtures and API test suite.
+
+Partially there, with known gaps:
+
+- [ ] **Fiscal data** — the issuer is a hardcoded placeholder (`frontend/src/lib/issuer.ts`);
+      there is no settings screen, and it can't be overridden for a single invoice.
+- [ ] **Clients** — subjects can be listed and created through the API, but the *Clientes* page is
+      a placeholder, new clients can't be created from the invoice form, and subjects can't be
+      edited or deleted.
+- [ ] **Series** — a serial is just a string on the invoice; the form offers a hardcoded list. There
+      is no series entity, uniqueness, character validation or lock once used.
+- [ ] **Drafts** — must already satisfy the same content rules as issued invoices (the spec allows
+      incomplete drafts) and cannot be deleted.
+- [ ] **Dashboard** — the layout exists but every figure and chart is static sample data.
+
+### Next: complete the MVP
+
+1. **Fiscal data settings** — manage the company profile (razón social, CIF, address, postal code,
+   province) used as default issuer; allow editing those details for a single invoice only.
+2. **Client / supplier directory** — full CRUD for subjects, distinguishing clients (issued invoices)
+   from suppliers (received invoices); create a client inline from the invoice form.
+3. **Invoice series** — series as a managed entity: unique code, valid-character validation,
+   create/delete, and read-only once an invoice uses it. Selectable (or created) from the invoice form.
+4. **Draft rules** — let drafts be saved incomplete, enforce required fields only when issuing,
+   and allow deleting drafts.
+5. **Received invoices (expenses)** — record supplier invoices with their concepts, VAT and IRPF.
+6. **Taxes**
+   - VAT to pay for a date range, with presets (*this month*, *current quarter*, *current year*).
+   - Pending IRPF from income and IRPF already withheld/advanced, by quarter or fiscal year.
+7. **Live dashboard** — replace the sample data with real income, expenses and tax figures.
+
+### Later: beyond the MVP
+
+- Expense control and forecasting (expense trends, upcoming tax payments).
+- Multi-tenant SaaS: user accounts, authentication and per-company data isolation (today the app
+  is single-tenant).
+
 ## Stack
 
 | Layer      | Technology                                              |
