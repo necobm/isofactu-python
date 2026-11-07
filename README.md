@@ -48,6 +48,9 @@ The core of **issued invoices** works end to end (API + UI):
       included) and the form is filled in from it, to review before saving. Read by an LLM of
       any vendor (LiteLLM); off unless `LLM_PROVIDER` / `LLM_MODEL` are set. See
       [Importing from PDF](#importing-from-pdf).
+- [x] **Dashboard** — income, expenses and what is pending collection, plus an income vs
+      expenses chart, all computed from the account's invoices for a chosen period; issued
+      invoices can be marked as collected. See [Dashboard](#dashboard).
 
 Partially there, with known gaps:
 
@@ -56,7 +59,6 @@ Partially there, with known gaps:
       modelled either: the supplier of a received invoice is typed in every time.
 - [ ] **Drafts** — must already satisfy the same content rules as issued invoices (the spec allows
       incomplete drafts) and cannot be deleted.
-- [ ] **Dashboard** — the layout exists but every figure and chart is static sample data.
 
 ### Next: complete the MVP
 
@@ -68,7 +70,7 @@ Partially there, with known gaps:
 4. **Taxes**
    - VAT to pay for a date range, with presets (*this month*, *current quarter*, *current year*).
    - Pending IRPF from income and IRPF already withheld/advanced, by quarter or fiscal year.
-5. **Live dashboard** — replace the sample data with real income, expenses and tax figures.
+5. **Tax figures on the dashboard** — VAT to pay and IRPF, once the taxes above are computed.
 
 ### Later: beyond the MVP
 
@@ -210,6 +212,8 @@ session (see [Accounts & authentication](#accounts--authentication)). Invoicing 
 | GET    | `/api/invoice/{id}`                     | ADMIN        | Issued invoice detail                          |
 | POST   | `/api/invoice`                          | ADMIN        | Create an invoice (draft or issued) for `clientId` with its lines (`409` until the fiscal data is set) |
 | PUT    | `/api/invoice/{id}`                     | ADMIN        | Replace a draft invoice (optionally re-pointing it at a `clientId`), or issue it |
+| PUT    | `/api/invoice/{id}/collection`          | ADMIN        | `{collectedOn}`: the day the client paid an issued invoice, or `null` for pending (`409` for drafts) |
+| GET    | `/api/dashboard`                        | ADMIN        | Income, expenses and their monthly series for `?from=&to=`, plus what is pending collection |
 | GET    | `/api/received-invoice`                 | ADMIN        | Collection of received invoices (`?limit=&offset=`) |
 | GET    | `/api/received-invoice/{id}`            | ADMIN        | Received invoice detail                        |
 | POST   | `/api/received-invoice`                 | ADMIN        | Record a supplier's invoice: supplier, number (required) and lines as entered (`409` until the fiscal data is set) |
@@ -283,6 +287,31 @@ Conventions:
 - Monetary amounts are JSON numbers with at most two decimals (`120.98`); the backend validates and
   computes them with `Decimal`, so nothing is lost in arithmetic. Inputs also accept numeric strings.
 - Line amounts use scale 2 with **half-up rounding** (`99.99 × 21 % = 20.9979 → 21.00`).
+
+## Dashboard
+
+*Panel* shows the account's activity, computed from its invoices, for the period chosen at the
+top (*Este mes*, *Este trimestre*, *Este año* — the default —, *Últimos 12 meses*, *Año
+anterior*, *Todo*):
+
+- **Ingresos** — the taxable base (without VAT) of the invoices issued in the period, and how
+  many there are.
+- **Gastos** — the same for the invoices received from suppliers.
+- **Pendiente de cobro** — what clients still owe: the total (VAT included, IRPF withheld) of
+  the issued invoices not collected yet, **whatever their date**, and how much of it is
+  overdue (past its due date). Links to the issued invoices.
+- **Ingresos vs Gastos** — the month-by-month taxable base of both, for the months of the
+  period (the tooltip adds the month's result).
+
+Drafts are never counted. Amounts are computed in the database from the invoice lines with the
+same per-line rounding as the invoices themselves (`app/dashboard/repository.py`), so they match
+the invoices to the cent.
+
+**Collecting invoices.** Issued invoices show whether they are collected (*Cobrada*, *Pendiente*,
+*Vencida*); the details of one let you mark it as collected on a given date (not before its
+issue date nor in the future) or back as pending. This is recorded on the invoice
+(`collectedOn`) but is not part of its content, so it can change after issuing. Migration `0012`
+adds it; existing invoices start as pending.
 
 ## Received invoices (expenses)
 
@@ -525,6 +554,7 @@ isofactu/
 │   │   │   ├── repository.py  #   Data access (users, system settings)
 │   │   │   └── router.py      #   /api/auth, /api/admin
 │   │   ├── clients/           # Clients module: the client directory (/api/client)
+│   │   ├── dashboard/         # Dashboard module: income, expenses, pending collection (/api/dashboard)
 │   │   ├── geo/               # Geo module: countries, provinces, cities (+ data/, see scripts/)
 │   │   ├── invoicing/         # Invoicing module (every row belongs to a tenant)
 │   │   │   ├── models.py      #   FiscalData, Serial, Subject (recipient copy), Invoice, InvoiceLine
@@ -566,7 +596,7 @@ isofactu/
 - **Serial** — a numbering series of a tenant (prefix, initial number, suffix, validity period). Locked once an issued invoice uses it.
 - **Client** — an entry of the tenant's client directory (name, NIF/CIF, address). Independent from invoices.
 - **Subject** — an invoice's own copy of its recipient: taken from a client when an issued invoice is created, or from the fiscal data for a received one.
-- **Invoice** — of a `kind`: `ISSUED` (income) or `RECEIVED` (expense). Carries a copy of its issuer (**Issuer** value object: the fiscal data, or the supplier as typed in), links a recipient, has a date, an invoice number, a state (`DRAFT` → `ISSUED` for issued invoices; received ones are always `ISSUED` and stay editable) and an optional IRPF retention rate, and contains one or more lines.
+- **Invoice** — of a `kind`: `ISSUED` (income) or `RECEIVED` (expense). Carries a copy of its issuer (**Issuer** value object: the fiscal data, or the supplier as typed in), links a recipient, has a date, an invoice number, a state (`DRAFT` → `ISSUED` for issued invoices; received ones are always `ISSUED` and stay editable) and an optional IRPF retention rate, and contains one or more lines. Issued invoices also record the day they were collected (`collectedOn`).
 - **InvoiceLine** — a concept with description, quantity, unit price and VAT rate. Amounts are computed with fixed-point decimals.
 - **InvoiceNumber** — value object: prefix + sequential number + suffix (`F-2026-42`), copied from the serial at issue time; unassigned while the invoice is a draft. On a received invoice, the supplier's whole number as printed (no prefix / suffix).
 
@@ -580,7 +610,8 @@ names and addresses) and consumed from two places:
 development database. Everything generated belongs to a demo tenant, `demo@isofactu.local`
 (password `demo1234`), created on first use — with generated fiscal data and a `F-<year>-`
 serial — so that you can log in and browse the data. Issued invoices are numbered correlatively
-from that serial in issue-date order:
+from that serial in issue-date order, and most of those older than a few weeks are marked as
+collected:
 
 ```bash
 make fixtures                                   # purge + 6 clients, 20 issued + 8 received invoices, seed 42

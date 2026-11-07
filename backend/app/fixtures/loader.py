@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import dataclass
 
+import factory
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,6 +42,20 @@ class LoadReport:
     received: int
     lines: int  # of both kinds
     owner: str
+
+
+# Share of issued invoices older than a few weeks that the client has paid already
+COLLECTED_RATIO = 0.8
+
+
+def _collection_date(issued: dt.date) -> dt.date | None:
+    """When the client paid an issued invoice: most older invoices are collected a few
+    weeks after their issue date; recent ones (and a few old ones) are still pending."""
+    rng = factory.random.randgen
+    today = dt.date.today()
+    if (today - issued).days < 20 or rng.random() >= COLLECTED_RATIO:
+        return None
+    return min(today, issued + dt.timedelta(days=rng.randint(5, 45)))
 
 
 async def purge_fixtures(session: AsyncSession) -> None:
@@ -129,6 +145,7 @@ async def load_fixtures(
             if invoice.state is InvoiceState.ISSUED:
                 invoice.invoice_number = serial.number(next_number)
                 next_number += 1
+                invoice.collected_on = _collection_date(invoice.issue_date)
         for _ in range(received):
             ReceivedInvoiceFactory(
                 owner=owner, recipient=SubjectFactory.copy_of_account(fiscal_data)

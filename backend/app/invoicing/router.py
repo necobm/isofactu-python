@@ -35,6 +35,7 @@ from app.invoicing.schemas import (
     FiscalDataRead,
     FiscalDataWrite,
     InvoiceCollection,
+    InvoiceCollectionStatus,
     InvoiceContent,
     InvoiceCreate,
     InvoiceRead,
@@ -449,6 +450,31 @@ async def update_invoice(
     invoice.state = payload.state
     _replace_content(invoice, payload)
 
+    await session.commit()
+    return await repo.reload(invoice)
+
+
+@invoice_router.put(
+    "/{invoice_id}/collection",
+    response_model=InvoiceRead,
+    summary="Record whether an issued invoice was collected",
+    description=(
+        "Sets the day the client paid an ISSUED invoice (`collectedOn`), or `null` to mark it "
+        "as pending collection again. This is not part of the invoice content, so it can be "
+        "changed after issuing. `409` for drafts; `422` for a date before the issue date or "
+        "in the future."
+    ),
+)
+async def set_invoice_collection(
+    tenant: CurrentTenant, invoice_id: int, payload: InvoiceCollectionStatus, session: SessionDep
+) -> Invoice:
+    repo = InvoiceRepository(session, tenant.id)
+    invoice = await _find_invoice(repo, invoice_id)
+    if invoice.state is not InvoiceState.ISSUED:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Only issued invoices can be collected")
+    if payload.collected_on is not None and payload.collected_on < invoice.issue_date:
+        raise _validation_error("collectedOn", "collectedOn cannot be earlier than the issue date")
+    invoice.collected_on = payload.collected_on
     await session.commit()
     return await repo.reload(invoice)
 

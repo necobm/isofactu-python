@@ -1,6 +1,7 @@
 import type { Invoice, Party } from '@/api'
 import { PAYMENT_METHOD_LABELS } from '@/components/invoice/paymentMethods'
 import { formatAmount, formatCurrency, formatDate, formatRate } from '@/lib/format'
+import CollectionPanel from './CollectionPanel'
 import InvoiceStateBadge from './InvoiceStateBadge'
 
 /** Postal address as display lines, skipping the parts that are empty. */
@@ -40,7 +41,13 @@ function Fact({ label, value }: { label: string; value: string }) {
 }
 
 /** Full read-only view of an invoice: header, parties, concepts, notes and totals. */
-export default function InvoiceDetails({ invoice }: { invoice: Invoice }) {
+interface InvoiceDetailsProps {
+  invoice: Invoice
+  /** The invoice changed (e.g. marked as collected): reload it. */
+  onChanged?: () => void
+}
+
+export default function InvoiceDetails({ invoice, onChanged }: InvoiceDetailsProps) {
   const number = invoice.invoiceNumber
   const hasRetention = invoice.retentionRate > 0
 
@@ -69,6 +76,9 @@ export default function InvoiceDetails({ invoice }: { invoice: Invoice }) {
           {invoice.dueDate && <Fact label="Vencimiento" value={formatDate(invoice.dueDate)} />}
         </dl>
       </div>
+
+      {/* Collection (issued invoices) */}
+      {onChanged && <CollectionPanel key={invoice.collectedOn ?? 'pending'} invoice={invoice} onChanged={onChanged} />}
 
       {/* Parties */}
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">

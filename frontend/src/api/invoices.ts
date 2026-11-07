@@ -1,6 +1,7 @@
 import { request } from './client'
 import type {
   Client,
+  Dashboard,
   ClientCollection,
   ClientInput,
   FiscalData,
@@ -46,6 +47,20 @@ export const api = {
   /** Replaces a draft invoice; issues it when `state` is ISSUED. */
   updateInvoice: (id: number, input: InvoiceInput) =>
     request<Invoice>(`/api/invoice/${id}`, { method: 'PUT', body: input }),
+
+  /**
+   * Records the day the client paid an issued invoice, or `null` to mark it as pending
+   * collection again (`409` for drafts, `422` for a date before issuing or in the future).
+   */
+  setInvoiceCollection: (id: number, collectedOn: string | null) =>
+    request<Invoice>(`/api/invoice/${id}/collection`, { method: 'PUT', body: { collectedOn } }),
+
+  /**
+   * Income, expenses and their monthly series for the period `[from, to]` (ISO dates; `from`
+   * defaults to the oldest invoice, `to` to today), plus what is pending collection.
+   */
+  getDashboard: (period: { from?: string; to?: string } = {}, signal?: AbortSignal) =>
+    request<Dashboard>('/api/dashboard', { query: period, signal }),
 
   /** Invoices received from suppliers (expenses). */
   listReceivedInvoices: (params: PageParams = {}, signal?: AbortSignal) =>

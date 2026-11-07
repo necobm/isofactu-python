@@ -419,6 +419,12 @@ class InvoiceRead(ApiModel):
     )
     notes: str
     due_date: date | None
+    collected_on: date | None = Field(
+        description=(
+            "Issued invoices: the day the client paid it, `null` while pending collection. "
+            "Always `null` on drafts and received invoices."
+        )
+    )
     payment_method: PaymentMethod
     retention_rate: Rate
     lines: list[InvoiceLineRead]
@@ -432,6 +438,25 @@ class InvoiceRead(ApiModel):
     def _unassigned_is_none(cls, value: object) -> object:
         if isinstance(value, InvoiceNumber) and not value.is_assigned:
             return None
+        return value
+
+
+class InvoiceCollectionStatus(ApiModel):
+    """Whether an issued invoice has been collected (paid by the client), and when."""
+
+    collected_on: date | None = Field(
+        description=(
+            "The day the client paid the invoice: not before its issue date nor in the future. "
+            "`null` marks it as pending collection again."
+        ),
+        examples=["2026-03-10"],
+    )
+
+    @field_validator("collected_on")
+    @classmethod
+    def _not_in_the_future(cls, value: date | None) -> date | None:
+        if value is not None and value > date.today():
+            raise ValueError("collectedOn cannot be in the future")
         return value
 
 

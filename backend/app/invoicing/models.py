@@ -172,6 +172,13 @@ class Invoice(Base):
             "kind = 'ISSUED' OR (number_prefix = '' AND number_suffix = '')",
             name="received_whole_number",
         ),
+        CheckConstraint(
+            "collected_on IS NULL OR (kind = 'ISSUED' AND state = 'ISSUED')",
+            name="collected_when_issued",
+        ),
+        CheckConstraint(
+            "collected_on IS NULL OR collected_on >= issue_date", name="collected_after_issue"
+        ),
     )
 
     id: Mapped[int] = mapped_column(init=False, primary_key=True)
@@ -226,6 +233,10 @@ class Invoice(Base):
         Enum(PaymentMethod, name="payment_method", native_enum=False, length=20),
         default=PaymentMethod.TRANSFER,
     )
+    # Issued invoices only: the day the client paid it, NULL while pending collection.
+    # Recorded by the tenant (`PUT /api/invoice/{id}/collection`), it is not part of the
+    # invoice content, so it can change after the invoice is issued.
+    collected_on: Mapped[date | None] = mapped_column(Date, default=None)
     # IRPF withholding applied to the whole invoice (Spanish freelancers): a percentage of
     # the subtotal that the recipient keeps back, so it is deducted from the total.
     retention_rate: Mapped[Decimal] = mapped_column(Numeric(5, 2), default=Decimal("0.00"))

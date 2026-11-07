@@ -135,6 +135,7 @@ export default function InvoiceSection({
                 invoice={invoice}
                 expandable={onSelect === undefined}
                 expanded={expandedId === invoice.id}
+                onChanged={invoices.reload}
                 onActivate={() =>
                   onSelect
                     ? onSelect(invoice)

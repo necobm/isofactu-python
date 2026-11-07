@@ -1,5 +1,8 @@
 import type { Invoice } from '@/api'
 import { formatCurrency, formatDate } from '@/lib/format'
+import { isoDate } from '@/lib/periods'
+import CollectionBadge from './CollectionBadge'
+import { collectionStatus } from './collection'
 import InvoiceDetails from './InvoiceDetails'
 
 /** Number of columns of the invoice table (the details row spans all of them). */
@@ -11,9 +14,12 @@ interface InvoiceRowProps {
   expandable: boolean
   expanded: boolean
   onActivate: () => void
+  /** The invoice changed from its details (e.g. marked as collected): reload the list. */
+  onChanged?: () => void
 }
 
-export default function InvoiceRow({ invoice, expandable, expanded, onActivate }: InvoiceRowProps) {
+export default function InvoiceRow({ invoice, expandable, expanded, onActivate, onChanged }: InvoiceRowProps) {
+  const collection = collectionStatus(invoice, isoDate(new Date()))
   // The other party: the client of an issued invoice, the supplier of a received one
   const counterpart = invoice.kind === 'RECEIVED' ? invoice.issuer : invoice.recipient
   return (
@@ -26,6 +32,11 @@ export default function InvoiceRow({ invoice, expandable, expanded, onActivate }
         <td className="px-5 py-3.5 text-slate-500 text-xs whitespace-nowrap">{formatDate(invoice.issueDate)}</td>
         <td className="px-5 py-3.5 font-mono text-xs text-slate-500">
           {invoice.invoiceNumber ? invoice.invoiceNumber.formatted : <span className="italic text-slate-400">Sin número</span>}
+          {collection && (
+            <span className="block mt-1 font-sans">
+              <CollectionBadge status={collection} />
+            </span>
+          )}
         </td>
         <td className="px-5 py-3.5">
           <p className="font-medium text-slate-700">{counterpart.fullName}</p>
@@ -51,7 +62,7 @@ export default function InvoiceRow({ invoice, expandable, expanded, onActivate }
       {expandable && expanded && (
         <tr className="bg-slate-50/70">
           <td colSpan={INVOICE_TABLE_COLUMNS} className="px-5 pb-5 pt-2">
-            <InvoiceDetails invoice={invoice} />
+            <InvoiceDetails invoice={invoice} onChanged={collection ? onChanged : undefined} />
           </td>
         </tr>
       )}

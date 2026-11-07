@@ -126,6 +126,8 @@ export interface Invoice {
   recipient: Subject
   notes: string
   dueDate: string | null // ISO date (YYYY-MM-DD)
+  /** Issued invoices: the day the client paid it; `null` while pending collection (and always on drafts / received invoices). */
+  collectedOn: string | null
   paymentMethod: PaymentMethod
   /** IRPF withholding (%) on the whole invoice; `retentionAmount` is deducted from `total`. */
   retentionRate: number
@@ -141,6 +143,47 @@ export interface InvoiceCollection {
   total: number
   limit: number
   offset: number
+}
+
+/** The final invoices of one book (issued = income, received = expenses) in a period. */
+export interface BookTotals {
+  count: number
+  /** Taxable base: the income / expense itself, without VAT. */
+  base: number
+  taxAmount: number
+  retentionAmount: number
+  /** Invoice totals: base + VAT - IRPF. */
+  total: number
+}
+
+/** Issued invoices not collected yet, whatever their date. */
+export interface PendingCollection {
+  count: number
+  /** What the clients owe (invoice totals). */
+  total: number
+  /** Those past their due date. */
+  overdueCount: number
+  overdueTotal: number
+}
+
+export interface MonthlyBalance {
+  /** YYYY-MM */
+  month: string
+  /** Taxable bases. */
+  income: number
+  expenses: number
+}
+
+export interface Dashboard {
+  /** The period the figures cover (ISO dates, inclusive). */
+  periodStart: string
+  periodEnd: string
+  income: BookTotals
+  expenses: BookTotals
+  /** Not limited to the period. */
+  pendingCollection: PendingCollection
+  /** One entry per month of the period. */
+  monthly: MonthlyBalance[]
 }
 
 export interface HealthStatus {
