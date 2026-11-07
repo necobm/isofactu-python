@@ -3,6 +3,7 @@ import TopNav, { type NavItem } from '@/components/TopNav'
 import { useAuth } from '@/lib/auth-context'
 import Dashboard from '@/pages/Dashboard'
 import FiscalDataSettings from '@/pages/FiscalDataSettings'
+import SerialSettings from '@/pages/SerialSettings'
 import Invoices from '@/pages/Invoices'
 import InvoiceForm from '@/pages/InvoiceForm'
 import type { Page } from '@/types'
@@ -20,7 +21,7 @@ const pageTitles: Record<Page, { title: string; subtitle: string }> = {
   facturas: { title: 'Facturas', subtitle: 'Gestiona y consulta tus borradores y facturas emitidas.' },
   gastos: { title: 'Gestión de Gastos', subtitle: 'Registra y controla tus gastos.' },
   clientes: { title: 'Directorio de Clientes', subtitle: 'Administra tu cartera de clientes.' },
-  ajustes: { title: 'Ajustes de la cuenta', subtitle: 'Tus datos fiscales, los que figuran como emisor en tus facturas.' },
+  ajustes: { title: 'Ajustes de la cuenta', subtitle: 'Tus datos fiscales (el emisor de tus facturas) y las series de numeración.' },
   createInvoice: { title: '', subtitle: '' },
   editInvoice: { title: '', subtitle: '' },
 }
@@ -44,7 +45,8 @@ export default function TenantApp() {
     setActivePage('editInvoice')
   }
 
-  /** Jump to the settings from the invoice form and come back to it once saved. */
+  /** Jump to the settings from the invoice form; saving the fiscal data there brings the
+   * user back to the form. */
   function configureFiscalData() {
     setAfterSettings(activePage)
     setActivePage('ajustes')
@@ -66,7 +68,7 @@ export default function TenantApp() {
           invoiceId={editingInvoiceId ?? undefined}
           onBack={showInvoices}
           onSaved={showInvoices}
-          onConfigureFiscalData={configureFiscalData}
+          onOpenSettings={configureFiscalData}
         />
       </>
     )
@@ -107,7 +109,12 @@ export default function TenantApp() {
       <main className="flex-1 max-w-screen-xl mx-auto w-full px-6 py-6">
         {activePage === 'dashboard' && <Dashboard onViewInvoices={() => setActivePage('facturas')} />}
         {activePage === 'facturas' && <Invoices onEditDraft={editDraft} />}
-        {activePage === 'ajustes' && <FiscalDataSettings onSaved={fiscalDataSaved} />}
+        {activePage === 'ajustes' && (
+          <div className="space-y-6">
+            <FiscalDataSettings onSaved={fiscalDataSaved} />
+            <SerialSettings />
+          </div>
+        )}
         {(activePage === 'gastos' || activePage === 'clientes') && (
           <div className="flex items-center justify-center h-64 text-slate-400">
             <p className="text-lg">Próximamente...</p>

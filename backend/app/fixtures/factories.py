@@ -34,7 +34,7 @@ from app.accounts.models import User
 from app.accounts.role import Role
 from app.invoicing.document_type import DocumentType
 from app.invoicing.invoice_state import InvoiceState
-from app.invoicing.models import FiscalData, Invoice, InvoiceLine, Subject
+from app.invoicing.models import FiscalData, Invoice, InvoiceLine, Serial, Subject
 from app.invoicing.payment_method import PaymentMethod
 from app.invoicing.value_objects import Address, IdentificationDocument, InvoiceNumber, Issuer
 
@@ -164,11 +164,15 @@ class IdentificationDocumentFactory(factory.Factory):
 
 
 class InvoiceNumberFactory(factory.Factory):
+    """A number in the default ``F-<year>-`` series (sequence shared by every factory call;
+    the fixtures loader renumbers per serial)."""
+
     class Meta:
         model = InvoiceNumber
 
-    serial = factory.LazyFunction(lambda: f"F-{dt.date.today().year}")
+    prefix = factory.LazyFunction(lambda: f"F-{dt.date.today().year}-")
     number = factory.Sequence(lambda n: str(n + 1))
+    suffix = ""
 
 
 class IssuerFactory(factory.Factory):
@@ -217,6 +221,18 @@ class FiscalDataFactory(BaseFactory):
     company_name = factory.Faker("company", locale=LOCALE)
     document = factory.SubFactory(IdentificationDocumentFactory, type=DocumentType.CIF)
     address = factory.SubFactory(AddressFactory)
+
+
+class SerialFactory(BaseFactory):
+    """A numbering series ``F-<year>-`` without time limits."""
+
+    class Meta:
+        model = Serial
+
+    owner = factory.SubFactory(UserFactory)
+    prefix = factory.LazyFunction(lambda: f"F-{dt.date.today().year}-")
+    suffix = ""
+    initial_number = 1
 
 
 class SubjectFactory(BaseFactory):

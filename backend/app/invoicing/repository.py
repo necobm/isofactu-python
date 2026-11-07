@@ -6,11 +6,11 @@ tenant's rows, so an invoice or subject of another account is simply "not found"
 
 from collections.abc import Sequence
 
-from sqlalchemy import BigInteger, cast, func, or_, select
+from sqlalchemy import BigInteger, cast, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.invoicing.invoice_state import InvoiceState
-from app.invoicing.models import FiscalData, Invoice, Subject
+from app.invoicing.models import FiscalData, Invoice, Serial, Subject
 
 LIKE_ESCAPE = "\\"
 
@@ -78,6 +78,71 @@ class FiscalDataRepository:
         return data
 
 
+class SerialRepository:
+    def __init__(self, session: AsyncSession, owner_id: int) -> None:
+        self.session = session
+        self.owner_id = owner_id
+
+    async def find_all(self) -> Sequence[Serial]:
+        stmt = (
+            select(Serial)
+            .where(Serial.owner_id == self.owner_id)
+            .order_by(Serial.prefix, Serial.suffix, Serial.id)
+        )
+        return (await self.session.scalars(stmt)).all()
+
+    async def find(self, serial_id: int) -> Serial | None:
+        stmt = select(Serial).where(Serial.id == serial_id, Serial.owner_id == self.owner_id)
+        return await self.session.scalar(stmt)
+
+    async def find_by_parts(self, prefix: str, suffix: str) -> Serial | None:
+        stmt = select(Serial).where(
+            Serial.owner_id == self.owner_id, Serial.prefix == prefix, Serial.suffix == suffix
+        )
+        return await self.session.scalar(stmt)
+
+    async def add(self, serial: Serial) -> Serial:
+        self.session.add(serial)
+        await self.session.flush()
+        return serial
+
+    async def delete(self, serial: Serial) -> None:
+        """Drafts that remembered the serial forget it; issued invoices must not exist
+        (see `issued_count`)."""
+        await self.session.execute(
+            update(Invoice).where(Invoice.serial_id == serial.id).values(serial_id=None)
+        )
+        await self.session.delete(serial)
+        await self.session.flush()
+
+    async def usage(self) -> dict[int, tuple[int, int]]:
+        """Per serial id: (issued invoices, highest number taken), for those with any."""
+        columns = Invoice.__table__.c
+        stmt = (
+            select(
+                columns.serial_id,
+                func.count(),
+                func.max(cast(columns.number, BigInteger)),
+            )
+            .where(
+                columns.owner_id == self.owner_id,
+                columns.serial_id.is_not(None),
+                columns.number.op("~")(r"^\d+$"),
+            )
+            .group_by(columns.serial_id)
+        )
+        rows = (await self.session.execute(stmt)).all()
+        return {serial_id: (count, highest or 0) for serial_id, count, highest in rows}
+
+    async def issued_count(self, serial: Serial) -> int:
+        stmt = (
+            select(func.count())
+            .select_from(Invoice)
+            .where(Invoice.serial_id == serial.id, Invoice.__table__.c.number.is_not(None))
+        )
+        return await self.session.scalar(stmt) or 0
+
+
 class InvoiceRepository:
     def __init__(self, session: AsyncSession, owner_id: int) -> None:
         self.session = session
@@ -107,25 +172,23 @@ class InvoiceRepository:
         stmt = select(Invoice).where(Invoice.id == invoice_id, Invoice.owner_id == self.owner_id)
         return (await self.session.scalars(stmt)).unique().one_or_none()
 
-    async def next_number(self, serial: str | None) -> str:
-        """Next sequential number within `serial` ("1" for an empty serial), per tenant.
+    async def next_number(self, serial: Serial) -> int:
+        """Next sequential number of `serial`: its initial number, or one more than the
+        highest already taken.
 
-        Numbers are plain integers rendered as strings; non-numeric numbers stored through
-        the API are ignored. A transaction-scoped advisory lock serialises concurrent
-        callers on the same tenant + serial, so two invoices cannot be issued with the
-        same number.
+        Numbers are plain integers rendered as strings; non-numeric legacy numbers are
+        ignored. A transaction-scoped advisory lock serialises concurrent callers on the
+        same serial, so two invoices cannot be issued with the same number.
         """
-        lock_key = func.hashtext(f"invoice_number:{self.owner_id}:{serial or ''}")
+        lock_key = func.hashtext(f"invoice_number:{serial.id}")
         await self.session.execute(select(func.pg_advisory_xact_lock(lock_key)))
 
         columns = Invoice.__table__.c
         stmt = select(func.max(cast(columns.number, BigInteger))).where(
-            columns.owner_id == self.owner_id,
-            columns.serial == serial if serial else columns.serial.is_(None),
-            columns.number.op("~")(r"^\d+$"),
+            columns.serial_id == serial.id, columns.number.op("~")(r"^\d+$")
         )
-        highest = await self.session.scalar(stmt) or 0
-        return str(highest + 1)
+        highest = await self.session.scalar(stmt)
+        return serial.initial_number if highest is None else max(highest + 1, serial.initial_number)
 
     async def add(self, invoice: Invoice) -> Invoice:
         self.session.add(invoice)

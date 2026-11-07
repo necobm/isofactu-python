@@ -2,7 +2,7 @@
 
 from httpx import AsyncClient
 
-from app.invoicing.models import FiscalData
+from app.invoicing.models import FiscalData, Serial
 from tests.conftest import login
 
 FISCAL_DATA = {
@@ -107,7 +107,7 @@ async def test_invoices_need_the_fiscal_data(tenant_client: AsyncClient) -> None
 
 
 async def test_invoices_are_stamped_with_the_fiscal_data(
-    tenant_client: AsyncClient, fiscal_data: FiscalData
+    tenant_client: AsyncClient, fiscal_data: FiscalData, serial: Serial
 ) -> None:
     recipient_id = await _recipient_id(tenant_client)
     payload = {"recipientId": recipient_id, "lines": [LINE]}
@@ -115,7 +115,7 @@ async def test_invoices_are_stamped_with_the_fiscal_data(
     draft = (await tenant_client.post("/api/invoice", json=payload)).json()
     issued = (
         await tenant_client.post(
-            "/api/invoice", json={**payload, "state": "ISSUED", "invoiceNumber": {"serial": "F"}}
+            "/api/invoice", json={**payload, "state": "ISSUED", "serialId": serial.id}
         )
     ).json()
     for invoice in (draft, issued):

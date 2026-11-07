@@ -48,13 +48,14 @@ from app.fixtures import (  # noqa: E402
     FiscalDataFactory,
     InvoiceFactory,
     InvoiceLineFactory,
+    SerialFactory,
     SubjectFactory,
     UserFactory,
     bind_session,
     reseed,
 )
 from app.invoicing.document_type import DocumentType  # noqa: E402
-from app.invoicing.models import FiscalData, Invoice, Subject  # noqa: E402
+from app.invoicing.models import FiscalData, Invoice, Serial, Subject  # noqa: E402
 from app.invoicing.value_objects import Address, IdentificationDocument  # noqa: E402
 from app.main import create_app  # noqa: E402
 
@@ -62,6 +63,7 @@ TABLES = (
     "invoice_line",
     "invoice",
     "subject",
+    "serial",
     "fiscal_data",
     "activation_token",
     "app_setting",
@@ -240,6 +242,14 @@ async def fiscal_data(factories: None, tenant: User, session: AsyncSession) -> F
     )
     await session.flush()
     return data
+
+
+@pytest_asyncio.fixture
+async def serial(factories: None, tenant: User, session: AsyncSession) -> Serial:
+    """A `F-2026-` serial of `tenant`, without time limits."""
+    serial = SerialFactory(owner=tenant, prefix="F-2026-")
+    await session.flush()
+    return serial
 
 
 @pytest_asyncio.fixture

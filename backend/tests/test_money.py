@@ -77,7 +77,7 @@ def test_invoice_totals_and_line_management() -> None:
     issuer = Issuer.of("Issuer", IdentificationDocument(DocumentType.NIF, "1"), Address())
     recipient = Subject(owner=owner, full_name="Recipient")
     invoice = Invoice(
-        owner=owner, issuer=issuer, recipient=recipient, invoice_number=InvoiceNumber("F", "1")
+        owner=owner, issuer=issuer, recipient=recipient, invoice_number=InvoiceNumber("F-", "1")
     )
 
     first = InvoiceLine(
@@ -103,15 +103,16 @@ def test_invoice_totals_and_line_management() -> None:
 
 
 def test_value_objects_string_representation() -> None:
-    assert str(InvoiceNumber("F-2026", "42")) == "F-2026-42"
-    assert str(InvoiceNumber(None, "42")) == "42"
+    assert str(InvoiceNumber("F-2026-", "42")) == "F-2026-42"
     assert str(InvoiceNumber("", "42")) == "42"
-    assert InvoiceNumber("F-2026", "42").is_assigned
+    assert str(InvoiceNumber("", "42", "/A")) == "42/A"
+    assert str(InvoiceNumber("F/", "42", "-2026")) == "F/42-2026"
+    assert InvoiceNumber("F-2026-", "42").is_assigned
     assert not InvoiceNumber().is_assigned and str(InvoiceNumber()) == ""
-    assert not InvoiceNumber("F-2026", "").is_assigned
+    assert not InvoiceNumber("F-2026-", "").is_assigned
     assert str(_invoice()) == "(draft)"
     assert str(IdentificationDocument(DocumentType.CIF, "B123")) == "CIF: B123"
     assert (
         str(Address("Calle 1", "28001", "Madrid", "Madrid")) == "Calle 1, 28001 Madrid, Madrid (ES)"
     )
-    assert str(_invoice(invoice_number=InvoiceNumber("A", "7"))) == "A-7"
+    assert str(_invoice(invoice_number=InvoiceNumber("A-", "7"))) == "A-7"

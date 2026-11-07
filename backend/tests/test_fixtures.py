@@ -21,7 +21,7 @@ from app.fixtures import (
 from app.fixtures.factories import NIF_CONTROL, spanish_cif, spanish_nif
 from app.invoicing.document_type import DocumentType
 from app.invoicing.invoice_state import InvoiceState
-from app.invoicing.models import FiscalData, Invoice, InvoiceLine, Subject
+from app.invoicing.models import FiscalData, Invoice, InvoiceLine, Serial, Subject
 from tests.conftest import login
 
 
@@ -135,6 +135,17 @@ async def test_load_fixtures_and_purge(session: AsyncSession, client: AsyncClien
     await login(client, demo, DEMO_TENANT_PASSWORD)
     assert (await client.get("/api/invoice")).json()["total"] == 7
 
+    # Issued invoices are numbered correlatively, in issue-date order, from one serial
+    serials = (await client.get("/api/serial")).json()
+    assert len(serials) == 1
+    issued = (await client.get("/api/invoice", params={"state": "ISSUED", "limit": 200})).json()
+    by_date = sorted(issued["items"], key=lambda i: (i["issueDate"], i["id"]))
+    numbers = [int(i["invoiceNumber"]["number"]) for i in by_date]
+    assert numbers == list(range(1, len(numbers) + 1))
+    assert all(i["serialId"] == serials[0]["id"] for i in issued["items"])
+    assert serials[0]["issuedCount"] == len(numbers)
+    assert serials[0]["nextNumber"] == len(numbers) + 1
+
     # Loading again reuses the account and only replaces the invoicing data
     report = await load_fixtures(
         session, invoices=2, clients=1, seed=5, purge=True, password_hash_rounds=4
@@ -142,6 +153,7 @@ async def test_load_fixtures_and_purge(session: AsyncSession, client: AsyncClien
     assert (report.subjects, report.invoices) == (1, 2)
     assert await session.scalar(select(func.count()).select_from(User)) == 1
     assert await session.scalar(select(func.count()).select_from(FiscalData)) == 1  # reused
+    assert await session.scalar(select(func.count()).select_from(Serial)) == 1  # regenerated
 
     await purge_fixtures(session)
     assert await session.scalar(select(func.count()).select_from(InvoiceLine)) == 0

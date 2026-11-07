@@ -64,8 +64,7 @@ export default function InvoiceDetails({ invoice }: { invoice: Invoice }) {
         </div>
         <dl className="flex flex-wrap gap-x-6 gap-y-1 text-xs">
           <Fact label="Fecha" value={formatDate(invoice.issueDate)} />
-          {number?.serial && <Fact label="Serie" value={number.serial} />}
-          {number && <Fact label="Número" value={number.number} />}
+          {number && <Fact label="Número" value={number.formatted} />}
           <Fact label="Pago" value={PAYMENT_METHOD_LABELS[invoice.paymentMethod]} />
           {invoice.dueDate && <Fact label="Vencimiento" value={formatDate(invoice.dueDate)} />}
         </dl>

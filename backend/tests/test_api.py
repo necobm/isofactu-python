@@ -7,16 +7,17 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounts.models import User
-from app.fixtures import InvoiceFactory
+from app.fixtures import InvoiceFactory, SerialFactory
 from app.invoicing.invoice_state import InvoiceState
-from app.invoicing.models import FiscalData, Subject
+from app.invoicing.models import FiscalData, Serial, Subject
 from app.invoicing.value_objects import InvoiceNumber
 
 
 @pytest.fixture
 def client(tenant_client: AsyncClient, fiscal_data: FiscalData) -> AsyncClient:
     """Every invoicing endpoint needs a logged-in tenant with its fiscal data set up (the
-    issuer of its invoices): in this module `client` is one."""
+    issuer of its invoices): in this module `client` is one. Issuing also needs a serial:
+    the `serial` fixture (`F-2026-`)."""
     return tenant_client
 
 
@@ -61,13 +62,15 @@ async def test_list_invoices_empty(client: AsyncClient) -> None:
 
 async def test_create_and_list_invoices(client: AsyncClient) -> None:
     recipient_id = await _create_subject(client, RECIPIENT)
+    serial = await client.post("/api/serial", json={"prefix": "F-2026-", "initialNumber": 42})
+    assert serial.status_code == 201, serial.text
 
     issue_date = date.today() - timedelta(days=30)
     due_date = issue_date + timedelta(days=30)
     payload = {
         "issueDate": issue_date.isoformat(),
         "state": "ISSUED",
-        "invoiceNumber": {"serial": "F-2026", "number": "42"},
+        "serialId": serial.json()["id"],
         "recipientId": recipient_id,
         "notes": "Pago a 30 días.",
         "dueDate": due_date.isoformat(),
@@ -80,7 +83,13 @@ async def test_create_and_list_invoices(client: AsyncClient) -> None:
     created = await client.post("/api/invoice", json=payload)
     assert created.status_code == 201, created.text
     body = created.json()
-    assert body["invoiceNumber"] == {"serial": "F-2026", "number": "42", "formatted": "F-2026-42"}
+    assert body["invoiceNumber"] == {
+        "prefix": "F-2026-",
+        "number": "42",
+        "suffix": "",
+        "formatted": "F-2026-42",
+    }
+    assert body["serialId"] == serial.json()["id"]
     assert body["state"] == "ISSUED"
     assert (body["notes"], body["dueDate"], body["paymentMethod"]) == (
         "Pago a 30 días.",
@@ -132,7 +141,7 @@ async def test_invoices_are_ordered_newest_first_and_paginated(
             owner=tenant,
             recipient=subject,
             issue_date=issued,
-            invoice_number=InvoiceNumber(None, number),
+            invoice_number=InvoiceNumber("", number),
             state=InvoiceState.ISSUED,
             lines=1,
         )
@@ -209,42 +218,56 @@ async def test_create_draft_has_no_number(client: AsyncClient) -> None:
     fetched = await client.get(f"/api/invoice/{body['id']}")
     assert fetched.json()["invoiceNumber"] is None
 
-    rejected = await client.post(
-        "/api/invoice", json={**base, "state": "DRAFT", "invoiceNumber": {"serial": "F-2026"}}
-    )
+    # A draft may remember the serial it will be issued with, but it must be one of ours
+    rejected = await client.post("/api/invoice", json={**base, "state": "DRAFT", "serialId": 999})
     assert rejected.status_code == 422
-    assert rejected.json()["detail"][0]["loc"] == ["body", "invoiceNumber"]
+    assert rejected.json()["detail"][0]["loc"] == ["body", "serialId"]
 
     invalid = await client.post("/api/invoice", json={**base, "state": "PAID"})
     assert invalid.status_code == 422
     assert invalid.json()["detail"][0]["loc"] == ["body", "state"]
 
 
-async def test_issuing_assigns_the_next_number_of_the_serial(client: AsyncClient) -> None:
+async def test_issuing_assigns_the_next_number_of_the_serial(
+    client: AsyncClient, serial: Serial
+) -> None:
     recipient_id = await _create_subject(client, RECIPIENT)
     base = {"recipientId": recipient_id, "state": "ISSUED", "lines": [LINE]}
 
-    async def issue(invoice_number: dict | None) -> dict:
-        payload = {**base, "invoiceNumber": invoice_number} if invoice_number else base
-        response = await client.post("/api/invoice", json=payload)
+    async def issue(serial_id: int | None, **extra) -> dict:
+        response = await client.post("/api/invoice", json={**base, "serialId": serial_id, **extra})
         assert response.status_code == 201, response.text
         return response.json()["invoiceNumber"]
 
-    assert (await issue({"serial": "F-2026"}))["formatted"] == "F-2026-1"
-    assert (await issue({"serial": "F-2026"}))["formatted"] == "F-2026-2"
-    # An explicit number is respected and the sequence continues after it
-    assert (await issue({"serial": "F-2026", "number": "10"}))["formatted"] == "F-2026-10"
-    assert (await issue({"serial": "F-2026", "number": ""}))["formatted"] == "F-2026-11"
-    # Non-numeric numbers are allowed but do not take part in the sequence
-    assert (await issue({"serial": "F-2026", "number": "2026/A"}))["formatted"] == "F-2026-2026/A"
-    assert (await issue({"serial": "F-2026"}))["formatted"] == "F-2026-12"
-    # Each serial has its own sequence, including the empty one
-    assert (await issue({"serial": "PRO-2026"}))["formatted"] == "PRO-2026-1"
-    assert (await issue(None)) == {"serial": None, "number": "1", "formatted": "1"}
-    assert (await issue({"serial": ""}))["formatted"] == "2"
+    assert (await issue(serial.id))["formatted"] == "F-2026-1"
+    assert (await issue(serial.id))["formatted"] == "F-2026-2"
+    # Each serial has its own sequence, starting at its initial number
+    pro = (await client.post("/api/serial", json={"prefix": "PRO-", "initialNumber": 100})).json()
+    assert (await issue(pro["id"])) == {
+        "prefix": "PRO-",
+        "number": "100",
+        "suffix": "",
+        "formatted": "PRO-100",
+    }
+    assert (await issue(pro["id"]))["formatted"] == "PRO-101"
+    assert (await issue(serial.id))["formatted"] == "F-2026-3"
+    # A suffix-only serial works too
+    suffixed = (await client.post("/api/serial", json={"suffix": "/R"})).json()
+    assert (await issue(suffixed["id"]))["formatted"] == "1/R"
 
-    serials = (await client.get("/api/invoice", params={"limit": 200})).json()["items"]
-    assert all(item["invoiceNumber"] for item in serials)
+    # Issuing needs a serial; numbers cannot be chosen by hand
+    missing = await client.post("/api/invoice", json=base)
+    assert missing.status_code == 422
+    assert missing.json()["detail"][0]["loc"] == ["body", "serialId"]
+    assert "required" in missing.json()["detail"][0]["msg"]
+    chosen = await client.post(
+        "/api/invoice", json={**base, "serialId": serial.id, "invoiceNumber": {"number": "9"}}
+    )
+    assert chosen.status_code == 201, chosen.text
+    assert chosen.json()["invoiceNumber"]["formatted"] == "F-2026-4"  # ignored
+
+    everything = (await client.get("/api/invoice", params={"limit": 200})).json()["items"]
+    assert all(item["invoiceNumber"] for item in everything)
 
 
 async def test_retention_is_deducted_from_the_total(client: AsyncClient) -> None:
@@ -333,7 +356,7 @@ async def test_invoice_dates_are_validated(client: AsyncClient) -> None:
     assert "dueDate" in early_due.json()["detail"][0]["msg"]
 
 
-async def test_update_draft_and_issue_it(client: AsyncClient) -> None:
+async def test_update_draft_and_issue_it(client: AsyncClient, serial: Serial) -> None:
     recipient_id = await _create_subject(client, RECIPIENT)
     other_id = await _create_subject(client, {"fullName": "Otro Cliente SL"})
     base = {"recipientId": recipient_id, "lines": [LINE]}
@@ -381,7 +404,7 @@ async def test_update_draft_and_issue_it(client: AsyncClient) -> None:
             **base,
             "recipientId": other_id,
             "state": "ISSUED",
-            "invoiceNumber": {"serial": "F-2026"},
+            "serialId": serial.id,
             "notes": "nota corregida",
             "lines": [{"description": "b", "quantity": 2, "unitPrice": 100, "taxRate": 21}],
         },
@@ -469,26 +492,34 @@ async def test_tenants_only_see_their_own_data(
 
 
 async def test_invoice_numbers_are_sequenced_per_tenant(
-    client: AsyncClient, invoice_factory: type[InvoiceFactory], other_tenant: User
+    client: AsyncClient,
+    invoice_factory: type[InvoiceFactory],
+    serial: Serial,
+    other_tenant: User,
+    session: AsyncSession,
 ) -> None:
-    # The other tenant already issued F-2026-1 and F-2026-2; that must not affect mine.
+    # The other tenant has its own `F-2026-` serial and already issued F-2026-1 and F-2026-2;
+    # that must not affect mine, and its serial cannot be used on my invoices.
+    theirs = SerialFactory(owner=other_tenant, prefix="F-2026-")
+    await session.flush()
     for number in ("1", "2"):
         invoice_factory(
             owner=other_tenant,
             state=InvoiceState.ISSUED,
-            invoice_number=InvoiceNumber("F-2026", number),
+            invoice_number=InvoiceNumber("F-2026-", number),
+            serial_id=theirs.id,
             lines=1,
         )
     recipient_id = await _create_subject(client, RECIPIENT)
-    payload = {
-        "recipientId": recipient_id,
-        "state": "ISSUED",
-        "invoiceNumber": {"serial": "F-2026"},
-        "lines": [LINE],
-    }
-    issued = await client.post("/api/invoice", json=payload)
+    payload = {"recipientId": recipient_id, "state": "ISSUED", "lines": [LINE]}
+    issued = await client.post("/api/invoice", json={**payload, "serialId": serial.id})
     assert issued.status_code == 201, issued.text
     assert issued.json()["invoiceNumber"]["formatted"] == "F-2026-1"
+
+    foreign = await client.post("/api/invoice", json={**payload, "serialId": theirs.id})
+    assert foreign.status_code == 422
+    assert foreign.json()["detail"][0]["loc"] == ["body", "serialId"]
+    assert (await client.get("/api/serial")).json()[0]["id"] == serial.id  # only mine listed
 
 
 async def test_super_admins_have_no_invoicing_data(super_admin_client: AsyncClient) -> None:

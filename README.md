@@ -27,6 +27,9 @@ The core of **issued invoices** works end to end (API + UI):
 - [x] **Fiscal data** — each tenant sets its company name, CIF/NIF and address in *Ajustes*;
       the server stamps it as issuer on every invoice it saves (a copy lives on the invoice, so
       issued invoices keep the data they were issued with).
+- [x] **Serials** — numbering series managed per tenant in *Ajustes* (prefix, initial number,
+      suffix, optional validity period); issued invoices take the next correlative number of the
+      chosen serial. See [Invoice numbering](#invoice-numbering).
 
 Partially there, with known gaps:
 
@@ -34,8 +37,6 @@ Partially there, with known gaps:
 - [ ] **Clients** — subjects can be listed and created through the API, but the *Clientes* page is
       a placeholder, new clients can't be created from the invoice form, and subjects can't be
       edited or deleted.
-- [ ] **Series** — a serial is just a string on the invoice; the form offers a hardcoded list. There
-      is no series entity, uniqueness, character validation or lock once used.
 - [ ] **Drafts** — must already satisfy the same content rules as issued invoices (the spec allows
       incomplete drafts) and cannot be deleted.
 - [ ] **Dashboard** — the layout exists but every figure and chart is static sample data.
@@ -45,15 +46,13 @@ Partially there, with known gaps:
 1. **Per-invoice issuer** — allow editing the fiscal data for a single invoice only.
 2. **Client / supplier directory** — full CRUD for subjects, distinguishing clients (issued invoices)
    from suppliers (received invoices); create a client inline from the invoice form.
-3. **Invoice series** — series as a managed entity: unique code, valid-character validation,
-   create/delete, and read-only once an invoice uses it. Selectable (or created) from the invoice form.
-4. **Draft rules** — let drafts be saved incomplete, enforce required fields only when issuing,
+3. **Draft rules** — let drafts be saved incomplete, enforce required fields only when issuing,
    and allow deleting drafts.
-5. **Received invoices (expenses)** — record supplier invoices with their concepts, VAT and IRPF.
-6. **Taxes**
+4. **Received invoices (expenses)** — record supplier invoices with their concepts, VAT and IRPF.
+5. **Taxes**
    - VAT to pay for a date range, with presets (*this month*, *current quarter*, *current year*).
    - Pending IRPF from income and IRPF already withheld/advanced, by quarter or fiscal year.
-7. **Live dashboard** — replace the sample data with real income, expenses and tax figures.
+6. **Live dashboard** — replace the sample data with real income, expenses and tax figures.
 
 ### Later: beyond the MVP
 
@@ -170,6 +169,11 @@ session (see [Accounts & authentication](#accounts--authentication)). Invoicing 
 | PUT    | `/api/admin/settings`                   | SUPER_ADMIN  | Update system settings                         |
 | GET    | `/api/fiscal-data`                      | ADMIN        | The account's fiscal data (issuer of its invoices), `null` until set up |
 | PUT    | `/api/fiscal-data`                      | ADMIN        | Create / replace the fiscal data                |
+| GET    | `/api/serial`                           | ADMIN        | The account's numbering serials, with usage and next number |
+| POST   | `/api/serial`                           | ADMIN        | Create a serial (`409` if prefix + suffix already exist) |
+| GET    | `/api/serial/{id}`                      | ADMIN        | Serial detail                                  |
+| PUT    | `/api/serial/{id}`                      | ADMIN        | Update a serial (`409` when changing prefix / suffix / initial number of one in use) |
+| DELETE | `/api/serial/{id}`                      | ADMIN        | Delete a serial (`409` when issued invoices use it) |
 | GET    | `/api/invoice`                          | ADMIN        | Collection of invoices (`?state=&limit=&offset=`) |
 | GET    | `/api/invoice/{id}`                     | ADMIN        | Invoice detail                                 |
 | POST   | `/api/invoice`                          | ADMIN        | Create an invoice (draft or issued) with its lines (`409` until the fiscal data is set) |
@@ -186,7 +190,8 @@ Example — `GET /api/invoice`:
     {
       "id": 1,
       "issueDate": "2026-06-08",
-      "invoiceNumber": { "serial": "F-2026", "number": "42", "formatted": "F-2026-42" },
+      "invoiceNumber": { "prefix": "F-2026-", "number": "42", "suffix": "", "formatted": "F-2026-42" },
+      "serialId": 1,
       "state": "ISSUED",
       "notes": "Pago a 30 días.",
       "dueDate": "2026-07-08",
@@ -220,9 +225,10 @@ Conventions:
 - `state` is the invoice lifecycle state: `DRAFT` (being prepared) or `ISSUED` (emitted). New
   invoices are created as `DRAFT` unless the payload says otherwise; `GET /api/invoice?state=`
   filters the collection (and its `total`) by state.
-- Drafts are numberless (`invoiceNumber` is `null` and must not be sent). When creating an
-  `ISSUED` invoice, send `"invoiceNumber": {"serial": "F-2026"}` to get the next sequential number
-  of that serial assigned (`F-2026-43`), or include `"number"` to pick one explicitly.
+- Drafts are numberless (`invoiceNumber` is `null`); they may carry a `serialId` to remember the
+  serial they will be issued with. Issuing (`"state": "ISSUED"`) requires a `serialId` whose serial
+  is available on the `issueDate`: the next correlative number of that serial is assigned and its
+  prefix / suffix are copied onto the invoice. Numbers cannot be chosen by hand.
 - `PUT /api/invoice/{id}` replaces a draft in full (lines included); sending `"state": "ISSUED"`
   issues it and assigns its number. Issued invoices are immutable (`409 Conflict`).
 - `issueDate` cannot be in the future and `dueDate` cannot be earlier than it.
@@ -234,6 +240,30 @@ Conventions:
 - Monetary amounts are JSON numbers with at most two decimals (`120.98`); the backend validates and
   computes them with `Decimal`, so nothing is lost in arithmetic. Inputs also accept numeric strings.
 - Line amounts use scale 2 with **half-up rounding** (`99.99 × 21 % = 20.9979 → 21.00`).
+
+## Invoice numbering
+
+Invoice numbers are `prefix` + correlative number + `suffix`, taken from one of the tenant's
+**serials** (*Ajustes → Series de facturación*). A serial has:
+
+- a **prefix** and a **suffix** (letters, digits and `. _ / -`; no blanks) — at least one of the
+  two is required, and the pair must be unique within the account (two serials producing the
+  same numbers would be a problem);
+- an **initial number** (≥ 1, default 1): the first invoice issued with the serial gets it, each
+  following one gets the previous number + 1 (a transaction-scoped advisory lock makes this safe
+  under concurrency);
+- an optional **validity period** (`startDate`, `endDate`, both inclusive): an invoice can only
+  take a number from the serial if its *issue date* falls inside it. Without an end date the
+  serial never expires; the invoice form only offers the serials available on the chosen date.
+
+Once an issued invoice uses a serial, its prefix, suffix and initial number are **frozen** and it
+cannot be deleted — Spanish invoicing requires correlative, unbroken numbering within a series.
+To retire a serial, give it an end date. Drafts that remembered a deleted (unused) serial simply
+lose the reference.
+
+Migration `0007` converts the free-text serials of existing invoices: every legacy serial `X` of
+a tenant becomes a serial with prefix `X-` (so `F-2026` + `42` still renders `F-2026-42`) and its
+invoices are linked to it.
 
 ## Accounts & authentication
 
@@ -322,7 +352,7 @@ isofactu/
 │   │   │   ├── repository.py  #   Data access (users, system settings)
 │   │   │   └── router.py      #   /api/auth, /api/admin
 │   │   ├── invoicing/         # Invoicing module (every row belongs to a tenant)
-│   │   │   ├── models.py      #   FiscalData, Subject, Invoice, InvoiceLine (SQLAlchemy)
+│   │   │   ├── models.py      #   FiscalData, Serial, Subject, Invoice, InvoiceLine (SQLAlchemy)
 │   │   │   ├── value_objects.py  # InvoiceNumber, IdentificationDocument, Address, Issuer (composites)
 │   │   │   ├── document_type.py  # CIF | NIF | OTHER
 │   │   │   ├── invoice_state.py  # DRAFT | ISSUED
@@ -330,7 +360,7 @@ isofactu/
 │   │   │   ├── money.py       #   bcmath-compatible decimal helpers
 │   │   │   ├── schemas.py     #   Pydantic models = API contract
 │   │   │   ├── repository.py  #   Data access, scoped to one tenant
-│   │   │   └── router.py      #   /api/fiscal-data, /api/invoice, /api/subject
+│   │   │   └── router.py      #   /api/fiscal-data, /api/serial, /api/invoice, /api/subject
 │   │   ├── fixtures/          # factory_boy factories + loader (shared by tests and CLI)
 │   │   └── cli.py             # Management commands (`users create-super-admin`, `fixtures load`)
 │   ├── alembic/               # Migrations (`alembic revision --autogenerate -m "..."`)
@@ -343,7 +373,7 @@ isofactu/
 │   │   ├── TenantApp.tsx      # ADMIN shell: dashboard, invoices...
 │   │   ├── AdminApp.tsx       # SUPER_ADMIN shell: accounts, settings
 │   │   ├── api/               # Typed API client (api, auth, admin) + contract types
-│   │   ├── pages/             # Login, ActivateAccount, Dashboard, Invoices, InvoiceForm, FiscalDataSettings, admin/
+│   │   ├── pages/             # Login, ActivateAccount, Dashboard, Invoices, InvoiceForm, FiscalDataSettings, SerialSettings, admin/
 │   │   ├── components/        # TopNav, forms, dashboard widgets, invoice form / table, admin/
 │   │   └── lib/               # AuthProvider + useAuth, tiny router, formatting, useApi hook
 │   └── vite.config.ts         # Builds to ../public, proxies /api in dev
@@ -354,10 +384,11 @@ isofactu/
 
 - **User / account** — someone who can log in. `ADMIN` users are tenants: every subject and invoice has one as `owner`. `SUPER_ADMIN` users only manage accounts.
 - **FiscalData** — the tenant's own identity (company name, CIF/NIF, address); one per account, edited in *Ajustes*.
+- **Serial** — a numbering series of a tenant (prefix, initial number, suffix, validity period). Locked once an issued invoice uses it.
 - **Subject** — a company or person identified by NIF/CIF that acts as recipient (client) of an invoice.
 - **Invoice** — carries a copy of the issuer's fiscal data (**Issuer** value object), links a recipient, has a date, an invoice number, a state (`DRAFT` → `ISSUED`) and an optional IRPF retention rate, and contains one or more lines.
 - **InvoiceLine** — a concept with description, quantity, unit price and VAT rate. Amounts are computed with fixed-point decimals.
-- **InvoiceNumber** — value object with an optional serial and a sequential number (`F-2026-42`); unassigned while the invoice is a draft.
+- **InvoiceNumber** — value object: prefix + sequential number + suffix (`F-2026-42`), copied from the serial at issue time; unassigned while the invoice is a draft.
 
 ## Fixtures
 
@@ -367,13 +398,14 @@ names and addresses) and consumed from two places:
 
 **1. Manually, through the management CLI** (inside the backend container) — to fill a
 development database. Everything generated belongs to a demo tenant, `demo@isofactu.local`
-(password `demo1234`), created on first use — with generated fiscal data — so that you can log
-in and browse the data:
+(password `demo1234`), created on first use — with generated fiscal data and a `F-<year>-`
+serial — so that you can log in and browse the data. Issued invoices are numbered correlatively
+from that serial in issue-date order:
 
 ```bash
 make fixtures                                   # purge + 6 clients, 20 invoices, seed 42
 make fixtures ARGS="--invoices 50 --clients 10" # same, with options
-make fixtures-purge                             # remove all invoicing data (accounts are kept)
+make fixtures-purge                             # remove invoices, subjects and serials (accounts and fiscal data are kept)
 
 # the underlying commands
 docker compose exec backend python -m app.cli fixtures load --invoices 50 --seed 42 --purge
@@ -406,6 +438,7 @@ def test_pure():                          # no database needed
 | `subject_factory`, `invoice_factory`, `invoice_line_factory`, `user_factory` | Factory classes bound to the test session |
 | `tenant`, `other_tenant`, `super_admin`                      | Persisted, active accounts (password `PASSWORD`) |
 | `fiscal_data`                                                | The fiscal data of `tenant` (needed to save invoices through the API) |
+| `serial`                                                     | A `F-2026-` serial of `tenant` (needed to issue invoices) |
 | `subject`, `invoice`                                         | One persisted instance, owned by `tenant`  |
 | `session`, `client`                                          | Async SQLAlchemy session / anonymous HTTP test client |
 | `tenant_client`, `super_admin_client`                        | HTTP test clients already logged in        |

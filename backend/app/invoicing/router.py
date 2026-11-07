@@ -13,17 +13,23 @@ from app.accounts.deps import CurrentTenant
 from app.accounts.models import User
 from app.core.database import get_session
 from app.invoicing.invoice_state import InvoiceState
-from app.invoicing.models import FiscalData, Invoice, InvoiceLine, Subject
-from app.invoicing.repository import FiscalDataRepository, InvoiceRepository, SubjectRepository
+from app.invoicing.models import FiscalData, Invoice, InvoiceLine, Serial, Subject
+from app.invoicing.repository import (
+    FiscalDataRepository,
+    InvoiceRepository,
+    SerialRepository,
+    SubjectRepository,
+)
 from app.invoicing.schemas import (
     FiscalDataRead,
     FiscalDataWrite,
     InvoiceCollection,
     InvoiceCreate,
-    InvoiceNumberInput,
     InvoiceRead,
     InvoiceUpdate,
     InvoiceWrite,
+    SerialRead,
+    SerialWrite,
     SubjectCreate,
     SubjectRead,
 )
@@ -40,6 +46,7 @@ SearchParam = Annotated[
 ]
 
 fiscal_data_router = APIRouter(prefix="/fiscal-data", tags=["Fiscal data"])
+serial_router = APIRouter(prefix="/serial", tags=["Serials"])
 invoice_router = APIRouter(prefix="/invoice", tags=["Invoices"])
 subject_router = APIRouter(prefix="/subject", tags=["Subjects"])
 
@@ -86,6 +93,137 @@ async def put_fiscal_data(
         data.address = address
     await session.commit()
     return data
+
+
+# -- serials --------------------------------------------------------------------------
+
+
+async def _serial_read(serial: Serial, repo: SerialRepository) -> SerialRead:
+    issued, highest = (await repo.usage()).get(serial.id, (0, 0))
+    return _serial_read_with(serial, issued, highest)
+
+
+def _serial_read_with(serial: Serial, issued: int, highest: int) -> SerialRead:
+    next_number = serial.initial_number if issued == 0 else max(highest + 1, serial.initial_number)
+    return SerialRead.model_validate(
+        {
+            "id": serial.id,
+            "prefix": serial.prefix,
+            "suffix": serial.suffix,
+            "initial_number": serial.initial_number,
+            "start_date": serial.start_date,
+            "end_date": serial.end_date,
+            "issued_count": issued,
+            "next_number": next_number,
+        }
+    )
+
+
+async def _find_serial(serial_id: int, repo: SerialRepository) -> Serial:
+    serial = await repo.find(serial_id)
+    if serial is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Serial not found")
+    return serial
+
+
+async def _check_unique(
+    payload: SerialWrite, repo: SerialRepository, current: Serial | None
+) -> None:
+    clash = await repo.find_by_parts(payload.prefix, payload.suffix)
+    if clash is not None and clash is not current:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "A serial with the same prefix and suffix already exists"
+        )
+
+
+@serial_router.get(
+    "",
+    response_model=list[SerialRead],
+    summary="List serials",
+    description=(
+        "The numbering series of the account, with how many invoices use each one and the "
+        "number the next invoice issued with it would get."
+    ),
+)
+async def list_serials(tenant: CurrentTenant, session: SessionDep) -> list[SerialRead]:
+    repo = SerialRepository(session, tenant.id)
+    usage = await repo.usage()
+    return [_serial_read_with(s, *usage.get(s.id, (0, 0))) for s in await repo.find_all()]
+
+
+@serial_router.post(
+    "",
+    response_model=SerialRead,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a serial",
+    description="`409` when the account already has a serial with the same prefix and suffix.",
+)
+async def create_serial(
+    tenant: CurrentTenant, payload: SerialWrite, session: SessionDep
+) -> SerialRead:
+    repo = SerialRepository(session, tenant.id)
+    await _check_unique(payload, repo, None)
+    serial = await repo.add(Serial(owner=tenant, **payload.model_dump()))
+    await session.commit()
+    return await _serial_read(serial, repo)
+
+
+@serial_router.get("/{serial_id}", response_model=SerialRead, summary="Get a serial")
+async def get_serial(tenant: CurrentTenant, serial_id: int, session: SessionDep) -> SerialRead:
+    repo = SerialRepository(session, tenant.id)
+    return await _serial_read(await _find_serial(serial_id, repo), repo)
+
+
+@serial_router.put(
+    "/{serial_id}",
+    response_model=SerialRead,
+    summary="Update a serial",
+    description=(
+        "Once an issued invoice uses the serial, its prefix, suffix and initial number are "
+        "frozen (`409` when changed); the dates can still be edited, e.g. to close it."
+    ),
+)
+async def update_serial(
+    tenant: CurrentTenant, serial_id: int, payload: SerialWrite, session: SessionDep
+) -> SerialRead:
+    repo = SerialRepository(session, tenant.id)
+    serial = await _find_serial(serial_id, repo)
+    issued = await repo.issued_count(serial)
+    frozen = (serial.prefix, serial.suffix, serial.initial_number)
+    if issued and frozen != (payload.prefix, payload.suffix, payload.initial_number):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "The prefix, suffix and initial number of a serial in use cannot be changed",
+        )
+    await _check_unique(payload, repo, serial)
+    for field, value in payload.model_dump().items():
+        setattr(serial, field, value)
+    await session.commit()
+    return await _serial_read(serial, repo)
+
+
+@serial_router.delete(
+    "/{serial_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a serial",
+    description=(
+        "`409` when an issued invoice uses it (set an end date instead). Drafts that "
+        "remembered the serial simply forget it."
+    ),
+)
+async def delete_serial(tenant: CurrentTenant, serial_id: int, session: SessionDep) -> None:
+    repo = SerialRepository(session, tenant.id)
+    serial = await _find_serial(serial_id, repo)
+    if await repo.issued_count(serial):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "A serial used by issued invoices cannot be deleted; set an end date to retire it",
+        )
+    await repo.delete(serial)
+    await session.commit()
+
+
+# -- invoices -------------------------------------------------------------------------
 
 
 async def _current_issuer(session: AsyncSession, tenant: User) -> Issuer:
@@ -154,16 +292,24 @@ async def _find_recipient(payload: InvoiceWrite, session: AsyncSession, tenant: 
     return recipient
 
 
-async def _resolve_number(payload: InvoiceWrite, repo: InvoiceRepository) -> InvoiceNumber:
-    """Drafts stay numberless; issued invoices get the requested number, or the next of
-    the serial when none is given."""
+async def _resolve_number(
+    payload: InvoiceWrite, session: AsyncSession, tenant: User, repo: InvoiceRepository
+) -> tuple[Serial | None, InvoiceNumber]:
+    """The serial referenced by the payload and the number to store: drafts stay
+    numberless (the serial, if any, is just remembered); issuing takes the next number of
+    the serial, which must exist and be available on the issue date."""
+    serial = None
+    if payload.serial_id is not None:
+        serial = await SerialRepository(session, tenant.id).find(payload.serial_id)
+        if serial is None:
+            raise _validation_error("serialId", "Serial not found")
     if payload.state is InvoiceState.DRAFT:
-        if payload.invoice_number is not None:
-            raise _validation_error("invoiceNumber", "Draft invoices cannot have an invoice number")
-        return InvoiceNumber()
-    requested = payload.invoice_number or InvoiceNumberInput()
-    number = requested.number or await repo.next_number(requested.serial)
-    return InvoiceNumber(requested.serial, number)
+        return serial, InvoiceNumber()
+    if serial is None:
+        raise _validation_error("serialId", "A serial is required to issue an invoice")
+    if not serial.is_available_on(payload.issue_date):
+        raise _validation_error("serialId", "The serial is not available on the issue date")
+    return serial, serial.number(await repo.next_number(serial))
 
 
 @invoice_router.post(
@@ -172,10 +318,9 @@ async def _resolve_number(payload: InvoiceWrite, repo: InvoiceRepository) -> Inv
     status_code=status.HTTP_201_CREATED,
     summary="Create an invoice",
     description=(
-        "Creates a DRAFT (numberless) or an ISSUED invoice. When issuing, the invoice number "
-        "is taken from `invoiceNumber`; if its `number` is omitted, the next sequential number "
-        "of the given serial is assigned. The issuer is the fiscal data of the account "
-        "(`409` until it is set up)."
+        "Creates a DRAFT (numberless) or an ISSUED invoice. When issuing, the next number of "
+        "the serial `serialId` is assigned (the serial must be available on the issue date). "
+        "The issuer is the fiscal data of the account (`409` until it is set up)."
     ),
 )
 async def create_invoice(
@@ -184,7 +329,7 @@ async def create_invoice(
     issuer = await _current_issuer(session, tenant)
     recipient = await _find_recipient(payload, session, tenant)
     repo = InvoiceRepository(session, tenant.id)
-    invoice_number = await _resolve_number(payload, repo)
+    serial, invoice_number = await _resolve_number(payload, session, tenant, repo)
 
     invoice = Invoice(
         owner=tenant,
@@ -192,6 +337,7 @@ async def create_invoice(
         recipient=recipient,
         issue_date=payload.issue_date,
         invoice_number=invoice_number,
+        serial_id=serial.id if serial else None,
         state=payload.state,
         notes=payload.notes,
         due_date=payload.due_date,
@@ -212,7 +358,7 @@ async def create_invoice(
     summary="Update a draft invoice",
     description=(
         "Replaces a DRAFT invoice (lines included). Sending `state: ISSUED` issues it, "
-        "assigning the next number of the serial. Issued invoices are immutable."
+        "assigning the next number of its serial. Issued invoices are immutable."
     ),
 )
 async def update_invoice(
@@ -227,7 +373,8 @@ async def update_invoice(
 
     issuer = await _current_issuer(session, tenant)
     recipient = await _find_recipient(payload, session, tenant)
-    invoice.invoice_number = await _resolve_number(payload, repo)
+    serial, invoice.invoice_number = await _resolve_number(payload, session, tenant, repo)
+    invoice.serial_id = serial.id if serial else None
     invoice.issuer = issuer  # drafts follow the current fiscal data until issued
     invoice.recipient = recipient
     invoice.issue_date = payload.issue_date

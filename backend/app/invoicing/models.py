@@ -12,7 +12,17 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import Date, Enum, ForeignKey, Numeric, String, Text
+from sqlalchemy import (
+    CheckConstraint,
+    Date,
+    Enum,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, composite, mapped_column, relationship
 
 from app.accounts.models import User
@@ -92,6 +102,46 @@ class FiscalData(Base):
         return self.company_name
 
 
+class Serial(Base):
+    """A numbering series of a tenant: ``prefix`` + sequential number + ``suffix``.
+
+    Numbers start at ``initial_number`` and are correlative within the serial. The serial
+    can be restricted to a period: invoices whose issue date falls outside
+    ``[start_date, end_date]`` (either bound optional) cannot take a number from it.
+    """
+
+    __tablename__ = "serial"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "prefix", "suffix"),
+        CheckConstraint("prefix <> '' OR suffix <> ''", name="prefix_or_suffix"),
+    )
+
+    id: Mapped[int] = mapped_column(init=False, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("user_account.id", ondelete="CASCADE"), init=False, index=True
+    )
+    owner: Mapped[User] = relationship(repr=False)
+    prefix: Mapped[str] = mapped_column(String(100), default="")
+    suffix: Mapped[str] = mapped_column(String(100), default="")
+    initial_number: Mapped[int] = mapped_column(Integer, default=1)
+    start_date: Mapped[date | None] = mapped_column(Date, default=None)
+    end_date: Mapped[date | None] = mapped_column(Date, default=None)
+
+    def is_available_on(self, day: date) -> bool:
+        """Whether an invoice issued on `day` may take a number from this serial."""
+        if self.start_date is not None and day < self.start_date:
+            return False
+        if self.end_date is not None and day > self.end_date:
+            return False
+        return True
+
+    def number(self, value: int) -> InvoiceNumber:
+        return InvoiceNumber(self.prefix, str(value), self.suffix)
+
+    def __str__(self) -> str:
+        return f"{self.prefix}#{self.suffix}"
+
+
 class Invoice(Base):
     """Carries a copy of the issuer's fiscal data, links a recipient, has a date and
     number and holds one or more lines."""
@@ -121,12 +171,17 @@ class Invoice(Base):
     recipient: Mapped[Subject] = relationship(foreign_keys=[recipient_id], lazy="joined")
 
     issue_date: Mapped[date] = mapped_column(Date, default_factory=date.today, index=True)
-    # Unassigned (both columns NULL) while the invoice is a draft.
+    # Unassigned (`number` NULL) while the invoice is a draft. Prefix and suffix are a copy
+    # of the serial's at the time of issuing.
     invoice_number: Mapped[InvoiceNumber] = composite(
-        mapped_column("serial", String(100), nullable=True),
+        mapped_column("number_prefix", String(100)),
         mapped_column("number", String(100), nullable=True),
+        mapped_column("number_suffix", String(100)),
         default_factory=InvoiceNumber,
     )
+    # The serial the number was (or, for a draft, will be) taken from. Serials used by an
+    # issued invoice cannot be deleted.
+    serial_id: Mapped[int | None] = mapped_column(ForeignKey("serial.id"), default=None, index=True)
     state: Mapped[InvoiceState] = mapped_column(
         Enum(InvoiceState, name="invoice_state", native_enum=False, length=10),
         default=InvoiceState.DRAFT,

@@ -41,26 +41,62 @@ Rate = Annotated[Decimal, Field(ge=0, le=100, decimal_places=2, examples=[21]), 
 class InvoiceNumberSchema(ApiModel):
     """An assigned invoice number (drafts have none: the field is `null`)."""
 
-    serial: str | None = Field(default=None, max_length=100, examples=["F-2026"])
+    prefix: str = Field(default="", max_length=100, examples=["F-2026-"])
     number: str = Field(min_length=1, max_length=100, examples=["42"])
+    suffix: str = Field(default="", max_length=100, examples=[""])
 
     @computed_field(examples=["F-2026-42"])  # type: ignore[prop-decorator]
     @property
     def formatted(self) -> str:
-        return f"{self.serial}-{self.number}" if self.serial else self.number
+        return f"{self.prefix}{self.number}{self.suffix}"
 
 
-class InvoiceNumberInput(ApiModel):
-    """Number requested when issuing an invoice. Leave `number` empty to get the next
-    sequential number of the serial assigned automatically."""
+# -- serial ---------------------------------------------------------------------------
 
-    serial: str | None = Field(default=None, max_length=100, examples=["F-2026"])
-    number: str | None = Field(default=None, max_length=100, examples=["42"])
+# Letters, digits and the usual separators. Blanks are not allowed: they would make the
+# rendered number ambiguous.
+SERIAL_PART_PATTERN = r"^[A-Za-z0-9._/-]*$"
+SerialPart = Annotated[
+    str,
+    Field(default="", max_length=100, pattern=SERIAL_PART_PATTERN, examples=["F-2026-"]),
+]
 
-    @field_validator("serial", "number")
-    @classmethod
-    def _blank_is_none(cls, value: str | None) -> str | None:
-        return value or None
+
+class SerialWrite(ApiModel):
+    """A numbering series: `prefix` + sequential number + `suffix`. At least one of prefix
+    and suffix is required. Leave the dates empty for a serial without time limits."""
+
+    prefix: SerialPart
+    suffix: SerialPart
+    initial_number: int = Field(default=1, ge=1, examples=[1])
+    start_date: date | None = Field(default=None, description="First issue date allowed")
+    end_date: date | None = Field(default=None, description="Last issue date allowed")
+
+    @model_validator(mode="after")
+    def _check_consistency(self) -> "SerialWrite":
+        if not self.prefix and not self.suffix:
+            raise ValueError("a prefix or a suffix is required")
+        if self.start_date and self.end_date and self.end_date < self.start_date:
+            raise ValueError("endDate cannot be earlier than startDate")
+        return self
+
+
+class SerialRead(SerialWrite):
+    id: int
+    issued_count: int = Field(description="Issued invoices numbered with this serial")
+    next_number: int = Field(description="The number the next invoice issued with it gets")
+
+    @computed_field(examples=["F-2026-43"])  # type: ignore[prop-decorator]
+    @property
+    def next_number_formatted(self) -> str:
+        return f"{self.prefix}{self.next_number}{self.suffix}"
+
+    @computed_field(  # type: ignore[prop-decorator]
+        description="Prefix, suffix and initial number are frozen once the serial is in use"
+    )
+    @property
+    def locked(self) -> bool:
+        return self.issued_count > 0
 
 
 class IdentificationDocumentSchema(ApiModel):
@@ -177,11 +213,12 @@ class InvoiceWrite(ApiModel):
         default=InvoiceState.DRAFT,
         description="Lifecycle state. New invoices start as DRAFT unless stated otherwise.",
     )
-    invoice_number: InvoiceNumberInput | None = Field(
+    serial_id: int | None = Field(
         default=None,
+        gt=0,
         description=(
-            "Only for ISSUED invoices (drafts are numberless). Omit `number` to have the next "
-            "one in the serial assigned."
+            "The serial the invoice number is taken from. Required to issue; a draft may "
+            "carry it to remember the choice."
         ),
     )
     recipient_id: int = Field(gt=0)
@@ -221,6 +258,7 @@ class InvoiceRead(ApiModel):
     id: int
     issue_date: date
     invoice_number: InvoiceNumberSchema | None = Field(description="`null` while a draft")
+    serial_id: int | None
     state: InvoiceState
     issuer: IssuerRead
     recipient: SubjectRead

@@ -7,10 +7,9 @@ import IssuerCard from '@/components/invoice/IssuerCard'
 import TotalsPanel, { type TaxBreakdownEntry } from '@/components/invoice/TotalsPanel'
 import { type LineDraft } from '@/components/invoice/taxes'
 import { invoiceAmounts, lineAmounts } from '@/lib/money'
+import { isSerialAvailableOn } from '@/lib/serials'
 import { useApi } from '@/lib/useApi'
 
-const SERIES_OPTIONS = ['F-2024', 'F-2025', 'F-2026', 'PRO-2026', 'REC-2026']
-const DEFAULT_SERIES = 'F-2026'
 const DEFAULT_VAT_RATE = 21
 
 const ISSUE_CONFIRMATION =
@@ -40,14 +39,14 @@ interface InvoiceFormProps {
   onBack: () => void
   /** The invoice was stored (as draft or issued). */
   onSaved: () => void
-  /** Open the settings page to fill in the fiscal data (needed before saving). */
-  onConfigureFiscalData: () => void
+  /** Open the account settings (fiscal data, serials), needed before saving / issuing. */
+  onOpenSettings: () => void
 }
 
-export default function InvoiceForm({ invoiceId, onBack, onSaved, onConfigureFiscalData }: InvoiceFormProps) {
+export default function InvoiceForm({ invoiceId, onBack, onSaved, onOpenSettings }: InvoiceFormProps) {
   const editing = invoiceId !== undefined
 
-  const [invoiceSeries, setInvoiceSeries] = useState(DEFAULT_SERIES)
+  const [serialId, setSerialId] = useState<number | null>(null)
   const [client, setClient] = useState<Subject | null>(null)
   const [lines, setLines] = useState<LineDraft[]>([emptyLine()])
   const [notes, setNotes] = useState('')
@@ -65,6 +64,20 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onConfigureFis
   const issuer = fiscalData.status === 'success' ? fiscalData.data : null
   const missingFiscalData = fiscalData.status === 'success' && fiscalData.data === null
 
+  // -- the number comes from one of the account's serials, valid on the issue date ------
+  const serials = useApi((signal) => api.listSerials(signal), [])
+  const availableSerials = useMemo(
+    () => (serials.data ?? []).filter((serial) => isSerialAvailableOn(serial, issueDate)),
+    [serials.data, issueDate],
+  )
+  const selectedSerial = availableSerials.find((serial) => serial.id === serialId) ?? null
+  // Keep a valid choice: the draft's serial if still available, otherwise the first one
+  useEffect(() => {
+    if (serials.status !== 'success') return
+    if (serialId !== null && availableSerials.some((serial) => serial.id === serialId)) return
+    setSerialId(availableSerials[0]?.id ?? null)
+  }, [serials.status, availableSerials, serialId])
+
   // -- editing: load the invoice and pre-fill the form with its data ---------------------
   const existing = useApi(
     (signal) => (invoiceId === undefined ? Promise.resolve(null) : api.getInvoice(invoiceId, signal)),
@@ -75,7 +88,7 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onConfigureFis
     if (!invoice || loaded?.id === invoice.id) return
     setLoaded(invoice)
     setClient(invoice.recipient)
-    setInvoiceSeries(invoice.invoiceNumber?.serial ?? DEFAULT_SERIES)
+    setSerialId(invoice.serialId)
     setLines(
       invoice.lines.length > 0
         ? invoice.lines.map((line) => ({
@@ -97,7 +110,7 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onConfigureFis
   // A validation / server message only makes sense until the user edits the form again.
   useEffect(
     () => setError(null),
-    [client, lines, notes, retentionRate, paymentMethod, issueDate, dueDate, invoiceSeries],
+    [client, lines, notes, retentionRate, paymentMethod, issueDate, dueDate, serialId],
   )
 
   const amounts = useMemo(
@@ -140,8 +153,13 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onConfigureFis
    * Returns a message when the form cannot be saved. The same rules apply whether the
    * invoice is stored as a draft or issued: both end up as an invoice in the database.
    */
-  function validate(): string | null {
+  function validate(state: InvoiceState): string | null {
     if (missingFiscalData) return 'Configura tus datos fiscales antes de guardar la factura.'
+    if (state === 'ISSUED' && !selectedSerial) {
+      return serials.data?.length
+        ? 'Ninguna serie está disponible en la fecha de emisión. Cambia la fecha o configura las series.'
+        : 'Crea una serie de facturación en los ajustes para poder emitir facturas.'
+    }
     if (!client) return 'Selecciona un cliente.'
     if (!issueDate) return 'Indica la fecha de emisión.'
     if (issueDate > isoToday()) return 'La fecha de emisión no puede ser futura.'
@@ -155,8 +173,9 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onConfigureFis
     return {
       state,
       issueDate,
-      // Drafts are numberless; when issuing, the server assigns the next number of the serial.
-      ...(state === 'ISSUED' ? { invoiceNumber: { serial: invoiceSeries } } : {}),
+      // Drafts are numberless (they just remember the serial); when issuing, the server
+      // assigns the next number of the serial.
+      serialId: selectedSerial?.id ?? null,
       // The issuer is not sent: the server stamps the account's fiscal data.
       recipientId: client!.id,
       notes: notes.trim(),
@@ -173,7 +192,7 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onConfigureFis
   }
 
   async function save(state: InvoiceState) {
-    const problem = validate()
+    const problem = validate(state)
     if (problem) {
       setConfirmingIssue(false)
       setError(problem)
@@ -194,7 +213,7 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onConfigureFis
   }
 
   function requestIssue() {
-    const problem = validate()
+    const problem = validate('ISSUED')
     if (problem) {
       setError(problem)
       return
@@ -244,13 +263,22 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onConfigureFis
           <label className="flex items-center gap-2 text-xs font-medium text-slate-500">
             Serie
             <select
-              value={invoiceSeries}
-              onChange={(e) => setInvoiceSeries(e.target.value)}
-              className="text-sm text-slate-700 border border-slate-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white font-medium"
+              value={selectedSerial?.id ?? ''}
+              onChange={(e) => setSerialId(e.target.value ? Number(e.target.value) : null)}
+              disabled={alreadyIssued || availableSerials.length === 0}
+              className="text-sm text-slate-700 border border-slate-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white font-medium font-mono disabled:bg-slate-50 disabled:text-slate-400"
             >
-              {SERIES_OPTIONS.map((s) => (
-                <option key={s} value={s}>{s}</option>
-              ))}
+              {alreadyIssued && loaded?.invoiceNumber ? (
+                <option value="">{loaded.invoiceNumber.formatted}</option>
+              ) : availableSerials.length === 0 ? (
+                <option value="">{serials.status === 'loading' ? 'Cargando…' : 'Sin series disponibles'}</option>
+              ) : (
+                availableSerials.map((serial) => (
+                  <option key={serial.id} value={serial.id}>
+                    {serial.prefix}‹nº›{serial.suffix} · próx. {serial.nextNumberFormatted}
+                  </option>
+                ))
+              )}
             </select>
           </label>
         </div>
@@ -271,10 +299,25 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onConfigureFis
             </p>
             <button
               type="button"
-              onClick={onConfigureFiscalData}
+              onClick={onOpenSettings}
               className="shrink-0 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 px-3 py-1.5 rounded-lg transition-colors"
             >
               Configurar datos fiscales
+            </button>
+          </div>
+        )}
+        {serials.status === 'success' && serials.data.length === 0 && !alreadyIssued && (
+          <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+            <p>
+              No tienes ninguna <strong>serie de facturación</strong>. Puedes guardar borradores, pero para emitir una
+              factura necesitas una serie de la que tomar el número.
+            </p>
+            <button
+              type="button"
+              onClick={onOpenSettings}
+              className="shrink-0 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 px-3 py-1.5 rounded-lg transition-colors"
+            >
+              Configurar series
             </button>
           </div>
         )}
@@ -287,7 +330,7 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onConfigureFis
                 <h2 className="text-sm font-semibold text-slate-700">Emisor</h2>
                 <button
                   type="button"
-                  onClick={onConfigureFiscalData}
+                  onClick={onOpenSettings}
                   className="text-xs font-medium text-indigo-600 hover:text-indigo-700"
                 >
                   Editar datos fiscales

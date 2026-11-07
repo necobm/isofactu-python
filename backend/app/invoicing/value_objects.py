@@ -12,14 +12,17 @@ from app.invoicing.document_type import DocumentType
 
 @dataclass(frozen=True, slots=True)
 class InvoiceNumber:
-    """Invoice identifier made of an optional serial plus a sequential number.
+    """Invoice identifier: a sequential number wrapped in the prefix / suffix of the serial
+    it was taken from (``F-2026-42``, ``42/A``...). Prefix and suffix are copied from the
+    serial when the invoice is issued, so the number never changes afterwards.
 
     Draft invoices carry no number yet: ``InvoiceNumber()`` is the *unassigned* value
     (``is_assigned`` is false and it renders as an empty string).
     """
 
-    serial: str | None = None
+    prefix: str = ""
     number: str | None = None
+    suffix: str = ""
 
     @property
     def is_assigned(self) -> bool:
@@ -28,9 +31,7 @@ class InvoiceNumber:
     def __str__(self) -> str:
         if not self.is_assigned:
             return ""
-        if self.serial:
-            return f"{self.serial}-{self.number}"
-        return str(self.number)
+        return f"{self.prefix}{self.number}{self.suffix}"
 
 
 @dataclass(frozen=True, slots=True)

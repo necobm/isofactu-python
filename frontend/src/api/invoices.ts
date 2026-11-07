@@ -7,6 +7,8 @@ import type {
   InvoiceCollection,
   InvoiceInput,
   InvoiceState,
+  Serial,
+  SerialInput,
   Subject,
   SubjectInput,
 } from './types'
@@ -47,6 +49,17 @@ export const api = {
 
   saveFiscalData: (input: FiscalDataInput) =>
     request<FiscalData>('/api/fiscal-data', { method: 'PUT', body: input }),
+
+  /** The numbering series of the account, with their usage and next number. */
+  listSerials: (signal?: AbortSignal) => request<Serial[]>('/api/serial', { signal }),
+
+  createSerial: (input: SerialInput) => request<Serial>('/api/serial', { method: 'POST', body: input }),
+
+  updateSerial: (id: number, input: SerialInput) =>
+    request<Serial>(`/api/serial/${id}`, { method: 'PUT', body: input }),
+
+  /** `409` when an issued invoice uses the serial. */
+  deleteSerial: (id: number) => request<void>(`/api/serial/${id}`, { method: 'DELETE' }),
 
   listSubjects: (params: SubjectListParams = {}, signal?: AbortSignal) =>
     request<Subject[]>('/api/subject', { query: params, signal }),

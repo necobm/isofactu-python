@@ -11,10 +11,30 @@ export type InvoiceState = 'DRAFT' | 'ISSUED'
 export type PaymentMethod = 'TRANSFER' | 'CASH' | 'CARD' | 'DIRECT_DEBIT'
 
 export interface InvoiceNumber {
-  serial: string | null
+  /** Copied from the serial when the invoice was issued. */
+  prefix: string
   number: string
-  /** `serial-number`, or just `number` when there is no serial. */
+  suffix: string
+  /** `prefix + number + suffix`. */
   formatted: string
+}
+
+/** A numbering series: `prefix` + sequential number + `suffix`. */
+export interface Serial {
+  id: number
+  prefix: string
+  suffix: string
+  initialNumber: number
+  /** First issue date allowed (ISO date), `null` = no limit. */
+  startDate: string | null
+  /** Last issue date allowed (ISO date), `null` = no limit. */
+  endDate: string | null
+  /** Issued invoices numbered with this serial. */
+  issuedCount: number
+  nextNumber: number
+  nextNumberFormatted: string
+  /** Prefix, suffix and initial number are frozen once the serial is in use. */
+  locked: boolean
 }
 
 export interface IdentificationDocument {
@@ -65,6 +85,8 @@ export interface Invoice {
   issueDate: string // ISO date (YYYY-MM-DD)
   /** `null` while the invoice is a draft. */
   invoiceNumber: InvoiceNumber | null
+  /** The serial the number was (or, for a draft, will be) taken from. */
+  serialId: number | null
   state: InvoiceState
   /** Copy of the account's fiscal data taken when the invoice was (last) saved. */
   issuer: Party
@@ -149,10 +171,10 @@ export interface InvoiceInput {
   /** Defaults to DRAFT on the server. */
   state?: InvoiceState
   /**
-   * Only for ISSUED invoices (drafts are numberless). Omit `number` to have the next
-   * sequential number of the serial assigned by the server.
+   * The serial the number is taken from. Required to issue (the serial must be available
+   * on the issue date); a draft may carry it to remember the choice.
    */
-  invoiceNumber?: { serial?: string | null; number?: string | null }
+  serialId?: number | null
   /** The issuer is not sent: the server stamps the account's fiscal data. */
   recipientId: number
   notes?: string
@@ -167,6 +189,15 @@ export interface SubjectInput {
   fullName: string
   document?: Partial<IdentificationDocument>
   address?: Partial<Address>
+}
+
+export interface SerialInput {
+  prefix: string
+  suffix: string
+  /** Defaults to 1 on the server. */
+  initialNumber?: number
+  startDate?: string | null
+  endDate?: string | null
 }
 
 export interface FiscalDataInput {
