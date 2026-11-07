@@ -1,5 +1,5 @@
 # Every target runs inside the Docker containers: no Python or Node needed on the host.
-.PHONY: help up dev down logs shell test test-backend test-frontend lint lint-backend lint-frontend \
+.PHONY: help up up-with-fixtures dev down logs shell test test-backend test-frontend lint lint-backend lint-frontend \
         build migrate migration fixtures fixtures-purge super-admin
 
 COMPOSE  = docker compose
@@ -12,6 +12,9 @@ help:            ## Show this help
 ## Lifecycle -----------------------------------------------------------------
 up:              ## Build & start everything -> http://localhost:8000
 	$(COMPOSE) up --build
+
+up-with-fixtures: ## Same as `up`, loading generated fixture data (purges invoicing data, adds a demo tenant)
+	LOAD_FIXTURES=1 $(COMPOSE) up --build
 
 dev:             ## Same as `up`, plus the Vite dev server with HMR -> http://localhost:5173
 	$(COMPOSE) --profile dev up --build

@@ -125,7 +125,7 @@ Open http://localhost:8000 for the app and http://localhost:8000/api/docs for th
 Log in with the `SUPER_ADMIN` account set in your `.env`
 to reach the account management panel, create an `ADMIN` account (a tenant) and pick up its
 activation link in Mailpit. Or populate the database with generated fixtures —
-`LOAD_FIXTURES=1 docker compose up --build` — which also creates a demo tenant you can log in as
+`LOAD_FIXTURES=1 docker compose up --build` (or `make up-with-fixtures`) — which also creates a demo tenant you can log in as
 (`demo@isofactu.local` / `demo1234`, see [Fixtures](#fixtures)).
 
 ## Development workflow
