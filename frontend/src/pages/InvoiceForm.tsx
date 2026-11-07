@@ -3,9 +3,9 @@ import { api, type Invoice, type InvoiceInput, type InvoiceState, type PaymentMe
 import ConfirmDialog from '@/components/ConfirmDialog'
 import ClientPicker from '@/components/invoice/ClientPicker'
 import ConceptsTable from '@/components/invoice/ConceptsTable'
+import IssuerCard from '@/components/invoice/IssuerCard'
 import TotalsPanel, { type TaxBreakdownEntry } from '@/components/invoice/TotalsPanel'
 import { type LineDraft } from '@/components/invoice/taxes'
-import { resolveIssuer } from '@/lib/issuer'
 import { invoiceAmounts, lineAmounts } from '@/lib/money'
 import { useApi } from '@/lib/useApi'
 
@@ -40,9 +40,11 @@ interface InvoiceFormProps {
   onBack: () => void
   /** The invoice was stored (as draft or issued). */
   onSaved: () => void
+  /** Open the settings page to fill in the fiscal data (needed before saving). */
+  onConfigureFiscalData: () => void
 }
 
-export default function InvoiceForm({ invoiceId, onBack, onSaved }: InvoiceFormProps) {
+export default function InvoiceForm({ invoiceId, onBack, onSaved, onConfigureFiscalData }: InvoiceFormProps) {
   const editing = invoiceId !== undefined
 
   const [invoiceSeries, setInvoiceSeries] = useState(DEFAULT_SERIES)
@@ -57,6 +59,11 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved }: InvoiceFormP
   const [confirmingIssue, setConfirmingIssue] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loaded, setLoaded] = useState<Invoice | null>(null)
+
+  // -- the issuer is the account's fiscal data; without it nothing can be saved --------
+  const fiscalData = useApi((signal) => api.getFiscalData(signal), [])
+  const issuer = fiscalData.status === 'success' ? fiscalData.data : null
+  const missingFiscalData = fiscalData.status === 'success' && fiscalData.data === null
 
   // -- editing: load the invoice and pre-fill the form with its data ---------------------
   const existing = useApi(
@@ -134,6 +141,7 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved }: InvoiceFormP
    * invoice is stored as a draft or issued: both end up as an invoice in the database.
    */
   function validate(): string | null {
+    if (missingFiscalData) return 'Configura tus datos fiscales antes de guardar la factura.'
     if (!client) return 'Selecciona un cliente.'
     if (!issueDate) return 'Indica la fecha de emisión.'
     if (issueDate > isoToday()) return 'La fecha de emisión no puede ser futura.'
@@ -143,13 +151,13 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved }: InvoiceFormP
     return null
   }
 
-  function buildPayload(state: InvoiceState, issuerId: number): InvoiceInput {
+  function buildPayload(state: InvoiceState): InvoiceInput {
     return {
       state,
       issueDate,
       // Drafts are numberless; when issuing, the server assigns the next number of the serial.
       ...(state === 'ISSUED' ? { invoiceNumber: { serial: invoiceSeries } } : {}),
-      issuerId,
+      // The issuer is not sent: the server stamps the account's fiscal data.
       recipientId: client!.id,
       notes: notes.trim(),
       dueDate: dueDate || null,
@@ -174,8 +182,7 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved }: InvoiceFormP
     setError(null)
     setSaving(state)
     try {
-      const issuer = await resolveIssuer()
-      const payload = buildPayload(state, issuer.id)
+      const payload = buildPayload(state)
       if (invoiceId === undefined) await api.createInvoice(payload)
       else await api.updateInvoice(invoiceId, payload)
       onSaved()
@@ -256,9 +263,47 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved }: InvoiceFormP
             Esta factura ya está emitida, por lo que no puede modificarse.
           </p>
         )}
+        {missingFiscalData && (
+          <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+            <p>
+              Antes de crear facturas tienes que configurar los <strong>datos fiscales</strong> de tu cuenta: son los que
+              aparecen como emisor.
+            </p>
+            <button
+              type="button"
+              onClick={onConfigureFiscalData}
+              className="shrink-0 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 px-3 py-1.5 rounded-lg transition-colors"
+            >
+              Configurar datos fiscales
+            </button>
+          </div>
+        )}
         <div className="grid grid-cols-12 gap-6">
           {/* Left column */}
           <div className="col-span-8 space-y-5">
+            {/* Issuer (the account's fiscal data) */}
+            <div className="bg-white rounded-xl border border-slate-200 px-5 py-4">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-sm font-semibold text-slate-700">Emisor</h2>
+                <button
+                  type="button"
+                  onClick={onConfigureFiscalData}
+                  className="text-xs font-medium text-indigo-600 hover:text-indigo-700"
+                >
+                  Editar datos fiscales
+                </button>
+              </div>
+              {alreadyIssued && loaded ? (
+                <IssuerCard issuer={loaded.issuer} />
+              ) : issuer ? (
+                <IssuerCard issuer={{ fullName: issuer.companyName, document: issuer.document, address: issuer.address }} />
+              ) : (
+                <p className="text-xs text-slate-400">
+                  {fiscalData.status === 'loading' ? 'Cargando datos fiscales…' : 'Sin datos fiscales configurados.'}
+                </p>
+              )}
+            </div>
+
             {/* Client section */}
             <div className="bg-white rounded-xl border border-slate-200 px-5 py-4">
               <h2 className="text-sm font-semibold text-slate-700 mb-4">Cliente</h2>
@@ -330,14 +375,14 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved }: InvoiceFormP
             </button>
             <button
               onClick={() => save('DRAFT')}
-              disabled={busy || alreadyIssued}
+              disabled={busy || alreadyIssued || missingFiscalData}
               className="text-sm font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 px-4 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {saving === 'DRAFT' ? 'Guardando…' : editing ? 'Guardar' : 'Guardar Borrador'}
             </button>
             <button
               onClick={requestIssue}
-              disabled={busy || alreadyIssued}
+              disabled={busy || alreadyIssued || missingFiscalData}
               className="text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {saving === 'ISSUED' ? 'Emitiendo…' : 'Finalizar Factura'}

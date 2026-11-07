@@ -1,16 +1,16 @@
-import type { Invoice, Subject } from '@/api'
+import type { Invoice, Party } from '@/api'
 import { PAYMENT_METHOD_LABELS } from '@/components/invoice/paymentMethods'
 import { formatAmount, formatCurrency, formatDate, formatRate } from '@/lib/format'
 import InvoiceStateBadge from './InvoiceStateBadge'
 
 /** Postal address as display lines, skipping the parts that are empty. */
-function addressLines({ street, zipCode, city, province, countryIsoCode }: Subject['address']): string[] {
+function addressLines({ street, zipCode, city, province, countryIsoCode }: Party['address']): string[] {
   const locality = [zipCode, city].filter(Boolean).join(' ')
   const region = [province, countryIsoCode].filter(Boolean).join(', ')
   return [street, locality, region].filter(Boolean)
 }
 
-function PartyCard({ title, subject }: { title: string; subject: Subject }) {
+function PartyCard({ title, subject }: { title: string; subject: Party }) {
   const lines = addressLines(subject.address)
   return (
     <div className="rounded-lg border border-slate-200 bg-white px-4 py-3">

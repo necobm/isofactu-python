@@ -10,7 +10,7 @@ from sqlalchemy import BigInteger, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.invoicing.invoice_state import InvoiceState
-from app.invoicing.models import Invoice, Subject
+from app.invoicing.models import FiscalData, Invoice, Subject
 
 LIKE_ESCAPE = "\\"
 
@@ -61,6 +61,21 @@ class SubjectRepository:
         self.session.add(subject)
         await self.session.flush()
         return subject
+
+
+class FiscalDataRepository:
+    def __init__(self, session: AsyncSession, owner_id: int) -> None:
+        self.session = session
+        self.owner_id = owner_id
+
+    async def get(self) -> FiscalData | None:
+        stmt = select(FiscalData).where(FiscalData.owner_id == self.owner_id)
+        return await self.session.scalar(stmt)
+
+    async def add(self, data: FiscalData) -> FiscalData:
+        self.session.add(data)
+        await self.session.flush()
+        return data
 
 
 class InvoiceRepository:

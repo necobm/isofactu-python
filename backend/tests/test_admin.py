@@ -187,7 +187,7 @@ async def test_delete_account_removes_its_data(
 
     # The database cascades: the tenant's invoices and subjects are gone, the other's stay
     assert await session.scalar(select(func.count()).select_from(Invoice)) == 1
-    assert await session.scalar(select(func.count()).select_from(Subject)) == 2
+    assert await session.scalar(select(func.count()).select_from(Subject)) == 1
     assert (await session.scalar(select(Invoice.id).where(Invoice.id == kept.id))) == kept.id
 
 

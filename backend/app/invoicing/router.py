@@ -13,9 +13,11 @@ from app.accounts.deps import CurrentTenant
 from app.accounts.models import User
 from app.core.database import get_session
 from app.invoicing.invoice_state import InvoiceState
-from app.invoicing.models import Invoice, InvoiceLine, Subject
-from app.invoicing.repository import InvoiceRepository, SubjectRepository
+from app.invoicing.models import FiscalData, Invoice, InvoiceLine, Subject
+from app.invoicing.repository import FiscalDataRepository, InvoiceRepository, SubjectRepository
 from app.invoicing.schemas import (
+    FiscalDataRead,
+    FiscalDataWrite,
     InvoiceCollection,
     InvoiceCreate,
     InvoiceNumberInput,
@@ -25,7 +27,7 @@ from app.invoicing.schemas import (
     SubjectCreate,
     SubjectRead,
 )
-from app.invoicing.value_objects import Address, IdentificationDocument, InvoiceNumber
+from app.invoicing.value_objects import Address, IdentificationDocument, InvoiceNumber, Issuer
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 LimitParam = Annotated[int, Query(ge=1, le=200, description="Page size")]
@@ -37,8 +39,65 @@ SearchParam = Annotated[
     str | None, Query(max_length=100, description="Match on the name or the document number")
 ]
 
+fiscal_data_router = APIRouter(prefix="/fiscal-data", tags=["Fiscal data"])
 invoice_router = APIRouter(prefix="/invoice", tags=["Invoices"])
 subject_router = APIRouter(prefix="/subject", tags=["Subjects"])
+
+
+# -- fiscal data ----------------------------------------------------------------------
+
+
+@fiscal_data_router.get(
+    "",
+    response_model=FiscalDataRead | None,
+    summary="Fiscal data of the account",
+    description="The tenant's identity as invoice issuer, or `null` while it is not set up.",
+)
+async def get_fiscal_data(tenant: CurrentTenant, session: SessionDep) -> FiscalData | None:
+    return await FiscalDataRepository(session, tenant.id).get()
+
+
+@fiscal_data_router.put(
+    "",
+    response_model=FiscalDataRead,
+    summary="Set the fiscal data of the account",
+    description=(
+        "Creates or replaces the fiscal data. It is stamped as issuer on every invoice saved "
+        "from then on (drafts included when they are next saved); issued invoices keep the "
+        "data they were issued with."
+    ),
+)
+async def put_fiscal_data(
+    tenant: CurrentTenant, payload: FiscalDataWrite, session: SessionDep
+) -> FiscalData:
+    repo = FiscalDataRepository(session, tenant.id)
+    data = await repo.get()
+    document = IdentificationDocument(**payload.document.model_dump())
+    address = Address(**payload.address.model_dump())
+    if data is None:
+        data = await repo.add(
+            FiscalData(
+                owner=tenant, company_name=payload.company_name, document=document, address=address
+            )
+        )
+    else:
+        data.company_name = payload.company_name
+        data.document = document
+        data.address = address
+    await session.commit()
+    return data
+
+
+async def _current_issuer(session: AsyncSession, tenant: User) -> Issuer:
+    """The issuer to stamp on an invoice being saved, or a 409 until the account has its
+    fiscal data set up."""
+    data = await FiscalDataRepository(session, tenant.id).get()
+    if data is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Set up the fiscal data of the account before creating invoices",
+        )
+    return data.as_issuer()
 
 
 # -- invoices -------------------------------------------------------------------------
@@ -86,18 +145,13 @@ def _validation_error(field: str, message: str) -> HTTPException:
     )
 
 
-async def _find_parties(
-    payload: InvoiceWrite, session: AsyncSession, tenant: User
-) -> tuple[Subject, Subject]:
-    """The issuer and recipient referenced by the payload, or a 422 naming the missing one.
-    Subjects of other tenants count as missing."""
-    subjects = SubjectRepository(session, tenant.id)
-    issuer = await subjects.find(payload.issuer_id)
-    recipient = await subjects.find(payload.recipient_id)
-    for field, subject in (("issuerId", issuer), ("recipientId", recipient)):
-        if subject is None:
-            raise _validation_error(field, "Subject not found")
-    return issuer, recipient  # type: ignore[return-value]
+async def _find_recipient(payload: InvoiceWrite, session: AsyncSession, tenant: User) -> Subject:
+    """The recipient referenced by the payload, or a 422. Subjects of other tenants count as
+    missing."""
+    recipient = await SubjectRepository(session, tenant.id).find(payload.recipient_id)
+    if recipient is None:
+        raise _validation_error("recipientId", "Subject not found")
+    return recipient
 
 
 async def _resolve_number(payload: InvoiceWrite, repo: InvoiceRepository) -> InvoiceNumber:
@@ -120,13 +174,15 @@ async def _resolve_number(payload: InvoiceWrite, repo: InvoiceRepository) -> Inv
     description=(
         "Creates a DRAFT (numberless) or an ISSUED invoice. When issuing, the invoice number "
         "is taken from `invoiceNumber`; if its `number` is omitted, the next sequential number "
-        "of the given serial is assigned."
+        "of the given serial is assigned. The issuer is the fiscal data of the account "
+        "(`409` until it is set up)."
     ),
 )
 async def create_invoice(
     tenant: CurrentTenant, payload: InvoiceCreate, session: SessionDep
 ) -> Invoice:
-    issuer, recipient = await _find_parties(payload, session, tenant)
+    issuer = await _current_issuer(session, tenant)
+    recipient = await _find_recipient(payload, session, tenant)
     repo = InvoiceRepository(session, tenant.id)
     invoice_number = await _resolve_number(payload, repo)
 
@@ -169,9 +225,10 @@ async def update_invoice(
     if invoice.state is InvoiceState.ISSUED:
         raise HTTPException(status.HTTP_409_CONFLICT, "An issued invoice can no longer be modified")
 
-    issuer, recipient = await _find_parties(payload, session, tenant)
+    issuer = await _current_issuer(session, tenant)
+    recipient = await _find_recipient(payload, session, tenant)
     invoice.invoice_number = await _resolve_number(payload, repo)
-    invoice.issuer = issuer
+    invoice.issuer = issuer  # drafts follow the current fiscal data until issued
     invoice.recipient = recipient
     invoice.issue_date = payload.issue_date
     invoice.state = payload.state

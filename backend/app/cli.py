@@ -99,14 +99,13 @@ def users_create_super_admin(
 def fixtures_load(
     invoices: Annotated[int, typer.Option(min=0, help="Number of invoices to generate")] = 20,
     clients: Annotated[int, typer.Option(min=1, help="Number of client subjects")] = 6,
-    issuers: Annotated[int, typer.Option(min=1, help="Number of issuer subjects")] = 1,
     seed: Annotated[int | None, typer.Option(help="Seed for reproducible data")] = None,
     purge: Annotated[bool, typer.Option(help="Delete existing data first")] = False,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmations")] = False,
     force: Annotated[bool, typer.Option(help="Allow running with APP_ENV=prod")] = False,
 ) -> None:
-    """Populate the database with generated subjects, invoices and lines, owned by the
-    demo tenant account (created if missing)."""
+    """Populate the database with generated clients, invoices and lines, owned by the
+    demo tenant account (created, with generated fiscal data, if missing)."""
     _guard_production(force)
     if purge and not yes:
         typer.confirm("This will DELETE all existing invoices and subjects. Continue?", abort=True)
@@ -115,7 +114,6 @@ def fixtures_load(
         async with get_session_factory()() as session:
             report = await load_fixtures(
                 session,
-                issuers=issuers,
                 clients=clients,
                 invoices=invoices,
                 seed=seed,

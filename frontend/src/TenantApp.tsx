@@ -2,6 +2,7 @@ import { useState } from 'react'
 import TopNav, { type NavItem } from '@/components/TopNav'
 import { useAuth } from '@/lib/auth-context'
 import Dashboard from '@/pages/Dashboard'
+import FiscalDataSettings from '@/pages/FiscalDataSettings'
 import Invoices from '@/pages/Invoices'
 import InvoiceForm from '@/pages/InvoiceForm'
 import type { Page } from '@/types'
@@ -11,6 +12,7 @@ const NAV_ITEMS: NavItem<Page>[] = [
   { id: 'facturas', label: 'Facturas' },
   { id: 'gastos', label: 'Gastos' },
   { id: 'clientes', label: 'Clientes' },
+  { id: 'ajustes', label: 'Ajustes' },
 ]
 
 const pageTitles: Record<Page, { title: string; subtitle: string }> = {
@@ -18,6 +20,7 @@ const pageTitles: Record<Page, { title: string; subtitle: string }> = {
   facturas: { title: 'Facturas', subtitle: 'Gestiona y consulta tus borradores y facturas emitidas.' },
   gastos: { title: 'Gestión de Gastos', subtitle: 'Registra y controla tus gastos.' },
   clientes: { title: 'Directorio de Clientes', subtitle: 'Administra tu cartera de clientes.' },
+  ajustes: { title: 'Ajustes de la cuenta', subtitle: 'Tus datos fiscales, los que figuran como emisor en tus facturas.' },
   createInvoice: { title: '', subtitle: '' },
   editInvoice: { title: '', subtitle: '' },
 }
@@ -27,6 +30,8 @@ export default function TenantApp() {
   const { user } = useAuth()
   const [activePage, setActivePage] = useState<Page>('dashboard')
   const [editingInvoiceId, setEditingInvoiceId] = useState<number | null>(null)
+  // Where to go back to after saving the fiscal data from the invoice form
+  const [afterSettings, setAfterSettings] = useState<Page | null>(null)
   const { title, subtitle } = pageTitles[activePage]
 
   function showInvoices() {
@@ -39,6 +44,19 @@ export default function TenantApp() {
     setActivePage('editInvoice')
   }
 
+  /** Jump to the settings from the invoice form and come back to it once saved. */
+  function configureFiscalData() {
+    setAfterSettings(activePage)
+    setActivePage('ajustes')
+  }
+
+  function fiscalDataSaved() {
+    if (afterSettings) {
+      setActivePage(afterSettings)
+      setAfterSettings(null)
+    }
+  }
+
   if (activePage === 'createInvoice' || (activePage === 'editInvoice' && editingInvoiceId !== null)) {
     return (
       <>
@@ -48,6 +66,7 @@ export default function TenantApp() {
           invoiceId={editingInvoiceId ?? undefined}
           onBack={showInvoices}
           onSaved={showInvoices}
+          onConfigureFiscalData={configureFiscalData}
         />
       </>
     )
@@ -88,6 +107,7 @@ export default function TenantApp() {
       <main className="flex-1 max-w-screen-xl mx-auto w-full px-6 py-6">
         {activePage === 'dashboard' && <Dashboard onViewInvoices={() => setActivePage('facturas')} />}
         {activePage === 'facturas' && <Invoices onEditDraft={editDraft} />}
+        {activePage === 'ajustes' && <FiscalDataSettings onSaved={fiscalDataSaved} />}
         {(activePage === 'gastos' || activePage === 'clientes') && (
           <div className="flex items-center justify-center h-64 text-slate-400">
             <p className="text-lg">Próximamente...</p>

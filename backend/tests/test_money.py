@@ -8,15 +8,13 @@ from app.accounts.models import User
 from app.invoicing.document_type import DocumentType
 from app.invoicing.models import Invoice, InvoiceLine, Subject
 from app.invoicing.money import bcadd, bcdiv, bcmul, bcsub, scale
-from app.invoicing.value_objects import Address, IdentificationDocument, InvoiceNumber
+from app.invoicing.value_objects import Address, IdentificationDocument, InvoiceNumber, Issuer
 
 
 def _invoice(**kwargs) -> Invoice:
-    """A transient invoice between two blank subjects of the same tenant."""
+    """A transient invoice with a blank issuer and a blank recipient."""
     owner = User(email="tenant@example.com")
-    return Invoice(
-        owner=owner, issuer=Subject(owner=owner), recipient=Subject(owner=owner), **kwargs
-    )
+    return Invoice(owner=owner, issuer=Issuer(), recipient=Subject(owner=owner), **kwargs)
 
 
 @pytest.mark.parametrize(
@@ -76,9 +74,7 @@ def test_invoice_line_defaults() -> None:
 
 def test_invoice_totals_and_line_management() -> None:
     owner = User(email="tenant@example.com")
-    issuer = Subject(
-        owner=owner, full_name="Issuer", document=IdentificationDocument(DocumentType.NIF, "1")
-    )
+    issuer = Issuer.of("Issuer", IdentificationDocument(DocumentType.NIF, "1"), Address())
     recipient = Subject(owner=owner, full_name="Recipient")
     invoice = Invoice(
         owner=owner, issuer=issuer, recipient=recipient, invoice_number=InvoiceNumber("F", "1")

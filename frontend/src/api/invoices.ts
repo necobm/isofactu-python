@@ -1,5 +1,7 @@
 import { request } from './client'
 import type {
+  FiscalData,
+  FiscalDataInput,
   HealthStatus,
   Invoice,
   InvoiceCollection,
@@ -39,6 +41,12 @@ export const api = {
   /** Replaces a draft invoice; issues it when `state` is ISSUED. */
   updateInvoice: (id: number, input: InvoiceInput) =>
     request<Invoice>(`/api/invoice/${id}`, { method: 'PUT', body: input }),
+
+  /** The account's fiscal data (issuer of its invoices), `null` until set up. */
+  getFiscalData: (signal?: AbortSignal) => request<FiscalData | null>('/api/fiscal-data', { signal }),
+
+  saveFiscalData: (input: FiscalDataInput) =>
+    request<FiscalData>('/api/fiscal-data', { method: 'PUT', body: input }),
 
   listSubjects: (params: SubjectListParams = {}, signal?: AbortSignal) =>
     request<Subject[]>('/api/subject', { query: params, signal }),

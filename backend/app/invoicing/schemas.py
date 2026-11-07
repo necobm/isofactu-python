@@ -76,6 +76,56 @@ class AddressSchema(ApiModel):
     country_iso_code: str = Field(default="ES", min_length=2, max_length=2, examples=["ES"])
 
 
+# -- fiscal data / issuer -------------------------------------------------------------
+
+
+class FiscalDocumentSchema(IdentificationDocumentSchema):
+    """Identification of the tenant itself: the number is mandatory."""
+
+    number: str = Field(min_length=1, max_length=100, examples=["B12345674"])
+
+    @field_validator("number")
+    @classmethod
+    def _upper(cls, value: str) -> str:
+        return value.upper()
+
+
+class FiscalAddressSchema(AddressSchema):
+    """Fiscal address of the tenant: street, postal code, city and country are mandatory."""
+
+    street: str = Field(min_length=1, max_length=255, examples=["Calle Mayor 1"])
+    zip_code: str = Field(min_length=1, max_length=50, examples=["28001"])
+    city: str = Field(min_length=1, max_length=100, examples=["Madrid"])
+    country_iso_code: str = Field(
+        default="ES", min_length=2, max_length=2, pattern=r"^[A-Za-z]{2}$", examples=["ES"]
+    )
+
+    @field_validator("country_iso_code")
+    @classmethod
+    def _upper(cls, value: str) -> str:
+        return value.upper()
+
+
+class FiscalDataWrite(ApiModel):
+    """The tenant's identity as invoice issuer."""
+
+    company_name: str = Field(min_length=1, max_length=255, examples=["Mi Empresa S.L."])
+    document: FiscalDocumentSchema
+    address: FiscalAddressSchema
+
+
+class FiscalDataRead(FiscalDataWrite):
+    pass
+
+
+class IssuerRead(ApiModel):
+    """The issuer as stamped on an invoice (a copy of the fiscal data at that time)."""
+
+    full_name: str
+    document: IdentificationDocumentSchema
+    address: AddressSchema
+
+
 # -- subject --------------------------------------------------------------------------
 
 
@@ -119,7 +169,8 @@ class InvoiceLineRead(InvoiceLineBase):
 
 
 class InvoiceWrite(ApiModel):
-    """Fields accepted when creating or replacing an invoice."""
+    """Fields accepted when creating or replacing an invoice. The issuer is not part of the
+    payload: it is always the fiscal data of the account."""
 
     issue_date: date = Field(default_factory=date.today, description="Cannot be in the future")
     state: InvoiceState = Field(
@@ -133,7 +184,6 @@ class InvoiceWrite(ApiModel):
             "one in the serial assigned."
         ),
     )
-    issuer_id: int = Field(gt=0)
     recipient_id: int = Field(gt=0)
     notes: str = Field(default="", max_length=5000)
     due_date: date | None = Field(default=None, description="Cannot be earlier than the issue date")
@@ -172,7 +222,7 @@ class InvoiceRead(ApiModel):
     issue_date: date
     invoice_number: InvoiceNumberSchema | None = Field(description="`null` while a draft")
     state: InvoiceState
-    issuer: SubjectRead
+    issuer: IssuerRead
     recipient: SubjectRead
     notes: str
     due_date: date | None

@@ -34,9 +34,9 @@ from app.accounts.models import User
 from app.accounts.role import Role
 from app.invoicing.document_type import DocumentType
 from app.invoicing.invoice_state import InvoiceState
-from app.invoicing.models import Invoice, InvoiceLine, Subject
+from app.invoicing.models import FiscalData, Invoice, InvoiceLine, Subject
 from app.invoicing.payment_method import PaymentMethod
-from app.invoicing.value_objects import Address, IdentificationDocument, InvoiceNumber
+from app.invoicing.value_objects import Address, IdentificationDocument, InvoiceNumber, Issuer
 
 LOCALE = "es_ES"
 DRAFT_RATIO = 0.2  # share of generated invoices left as drafts
@@ -171,6 +171,26 @@ class InvoiceNumberFactory(factory.Factory):
     number = factory.Sequence(lambda n: str(n + 1))
 
 
+class IssuerFactory(factory.Factory):
+    """The issuer snapshot of an invoice: a company with a CIF and a Spanish address."""
+
+    class Meta:
+        model = Issuer
+
+    class Params:
+        document = factory.SubFactory(IdentificationDocumentFactory, type=DocumentType.CIF)
+        address = factory.SubFactory(AddressFactory)
+
+    full_name = factory.Faker("company", locale=LOCALE)
+    document_type = factory.LazyAttribute(lambda o: o.document.type)
+    document_number = factory.LazyAttribute(lambda o: o.document.number)
+    street = factory.LazyAttribute(lambda o: o.address.street)
+    zip_code = factory.LazyAttribute(lambda o: o.address.zip_code)
+    city = factory.LazyAttribute(lambda o: o.address.city)
+    province = factory.LazyAttribute(lambda o: o.address.province)
+    country_iso_code = factory.LazyAttribute(lambda o: o.address.country_iso_code)
+
+
 # -- entities -------------------------------------------------------------------------
 
 
@@ -185,6 +205,18 @@ class UserFactory(BaseFactory):
     name = factory.Faker("name", locale=LOCALE)
     role = Role.ADMIN
     status = AccountStatus.ACTIVE
+
+
+class FiscalDataFactory(BaseFactory):
+    """The fiscal data (issuer identity) of a tenant: a company with a CIF."""
+
+    class Meta:
+        model = FiscalData
+
+    owner = factory.SubFactory(UserFactory)
+    company_name = factory.Faker("company", locale=LOCALE)
+    document = factory.SubFactory(IdentificationDocumentFactory, type=DocumentType.CIF)
+    address = factory.SubFactory(AddressFactory)
 
 
 class SubjectFactory(BaseFactory):
@@ -213,15 +245,16 @@ class InvoiceLineFactory(BaseFactory):
 
 
 class InvoiceFactory(BaseFactory):
-    """An invoice with an issuer, a recipient and (by default) 1-4 lines.
+    """An invoice with a generated issuer snapshot, a recipient and (by default) 1-4 lines.
 
     ``InvoiceFactory(lines=3)`` creates exactly three; ``InvoiceFactory(lines=[line, ...])``
     uses the given ones instead. Generated lines always carry a concept and a positive
     amount, as the API requires.
     Most invoices are ISSUED; about one in five is left as a DRAFT, which carries no
     invoice number (``InvoiceFactory(state=InvoiceState.ISSUED)`` pins the state).
-    The invoice and its generated parties share the same ``owner`` (tenant); pass
-    ``owner=user`` to pin it (explicit ``issuer`` / ``recipient`` keep their own owner).
+    The invoice and its generated recipient share the same ``owner`` (tenant); pass
+    ``owner=user`` to pin it (an explicit ``recipient`` keeps its own owner). The issuer is
+    a value object: pass ``issuer=fiscal_data.as_issuer()`` to stamp a tenant's real one.
     """
 
     class Meta:
@@ -231,7 +264,7 @@ class InvoiceFactory(BaseFactory):
         is_draft = factory.LazyAttribute(lambda o: o.state is InvoiceState.DRAFT)
 
     owner = factory.SubFactory(UserFactory)
-    issuer = factory.SubFactory(SubjectFactory, owner=factory.SelfAttribute("..owner"))
+    issuer = factory.SubFactory(IssuerFactory)
     recipient = factory.SubFactory(SubjectFactory, owner=factory.SelfAttribute("..owner"))
     issue_date = fuzzy.FuzzyDate(dt.date.today() - dt.timedelta(days=365), dt.date.today())
     state = factory.LazyFunction(

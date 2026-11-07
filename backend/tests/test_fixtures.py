@@ -21,7 +21,7 @@ from app.fixtures import (
 from app.fixtures.factories import NIF_CONTROL, spanish_cif, spanish_nif
 from app.invoicing.document_type import DocumentType
 from app.invoicing.invoice_state import InvoiceState
-from app.invoicing.models import Invoice, InvoiceLine, Subject
+from app.invoicing.models import FiscalData, Invoice, InvoiceLine, Subject
 from tests.conftest import login
 
 
@@ -44,9 +44,9 @@ def test_build_does_not_need_a_session() -> None:
     # Generated data satisfies the API rules: a concept on every line and a positive amount
     assert all(line.description for line in invoice.lines)
     assert invoice.subtotal > 0
-    assert invoice.issuer is not invoice.recipient
-    # The invoice and its parties belong to the same (generated) tenant
-    assert invoice.owner is invoice.issuer.owner is invoice.recipient.owner
+    # The issuer is a generated company snapshot; the recipient belongs to the invoice's tenant
+    assert invoice.issuer.full_name and invoice.issuer.document.number
+    assert invoice.owner is invoice.recipient.owner
     lines_total = sum((line.total for line in invoice.lines), Decimal("0.00"))
     assert invoice.total == lines_total - invoice.retention_amount
     assert all(line.invoice is invoice for line in invoice.lines)
@@ -95,7 +95,7 @@ async def test_invoice_fixture_is_persisted(
     assert invoice.id is not None
     assert invoice.owner_id == tenant.id
     assert invoice.lines and all(line.id is not None for line in invoice.lines)
-    assert await session.scalar(select(func.count()).select_from(Subject)) == 2
+    assert await session.scalar(select(func.count()).select_from(Subject)) == 1  # the recipient
 
 
 async def test_factories_feed_the_api(
@@ -117,15 +117,16 @@ async def test_factories_feed_the_api(
 
 
 async def test_load_fixtures_and_purge(session: AsyncSession, client: AsyncClient) -> None:
-    report = await load_fixtures(
-        session, issuers=2, clients=3, invoices=7, seed=5, password_hash_rounds=4
-    )
-    assert (report.subjects, report.invoices) == (5, 7)
+    report = await load_fixtures(session, clients=3, invoices=7, seed=5, password_hash_rounds=4)
+    assert (report.subjects, report.invoices) == (3, 7)
     assert report.lines >= 7
     assert report.owner == DEMO_TENANT_EMAIL
 
-    issuers = await session.scalars(select(Invoice.issuer_id).distinct())
-    assert len(list(issuers)) == 2
+    # Every invoice is issued by the demo tenant's (generated) fiscal data
+    fiscal = await session.scalar(select(FiscalData))
+    assert fiscal is not None
+    issuers = await session.scalars(select(Invoice.__table__.c.issuer_document_number).distinct())
+    assert list(issuers) == [fiscal.document.number]
 
     # Everything belongs to the demo tenant, which can log in with the documented password
     owners = await session.scalars(select(Invoice.owner_id).distinct())
@@ -138,8 +139,9 @@ async def test_load_fixtures_and_purge(session: AsyncSession, client: AsyncClien
     report = await load_fixtures(
         session, invoices=2, clients=1, seed=5, purge=True, password_hash_rounds=4
     )
-    assert (report.subjects, report.invoices) == (2, 2)
+    assert (report.subjects, report.invoices) == (1, 2)
     assert await session.scalar(select(func.count()).select_from(User)) == 1
+    assert await session.scalar(select(func.count()).select_from(FiscalData)) == 1  # reused
 
     await purge_fixtures(session)
     assert await session.scalar(select(func.count()).select_from(InvoiceLine)) == 0

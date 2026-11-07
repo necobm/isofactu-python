@@ -1,8 +1,10 @@
 """Data fixtures: factory_boy factories shared by the test-suite and the `fixtures` CLI."""
 
 from app.fixtures.factories import (
+    FiscalDataFactory,
     InvoiceFactory,
     InvoiceLineFactory,
+    IssuerFactory,
     SubjectFactory,
     UserFactory,
     bind_session,
@@ -19,8 +21,10 @@ from app.fixtures.loader import (
 __all__ = [
     "DEMO_TENANT_EMAIL",
     "DEMO_TENANT_PASSWORD",
+    "FiscalDataFactory",
     "InvoiceFactory",
     "InvoiceLineFactory",
+    "IssuerFactory",
     "LoadReport",
     "SubjectFactory",
     "UserFactory",

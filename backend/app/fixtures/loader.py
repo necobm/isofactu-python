@@ -10,8 +10,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.accounts.models import User
 from app.accounts.repository import UserRepository
 from app.accounts.security import hash_password
-from app.fixtures.factories import InvoiceFactory, SubjectFactory, UserFactory, bind_session, reseed
-from app.invoicing.models import Invoice, InvoiceLine, Subject
+from app.fixtures.factories import (
+    FiscalDataFactory,
+    InvoiceFactory,
+    SubjectFactory,
+    UserFactory,
+    bind_session,
+    reseed,
+)
+from app.invoicing.models import FiscalData, Invoice, InvoiceLine, Subject
+from app.invoicing.repository import FiscalDataRepository
 
 # The tenant owning the generated data, so that it can be browsed after logging in.
 DEMO_TENANT_EMAIL = "demo@isofactu.local"
@@ -28,7 +36,8 @@ class LoadReport:
 
 
 async def purge_fixtures(session: AsyncSession) -> None:
-    """Delete every invoice, line and subject (in dependency order). Accounts are kept."""
+    """Delete every invoice, line and subject (in dependency order). Accounts and their
+    fiscal data are kept."""
     for model in (InvoiceLine, Invoice, Subject):
         await session.execute(delete(model))
 
@@ -45,19 +54,28 @@ async def ensure_demo_tenant(session: AsyncSession, *, password_hash_rounds: int
     return user
 
 
+async def ensure_fiscal_data(session: AsyncSession, owner: User) -> FiscalData:
+    """The tenant's fiscal data, generated when it has none yet."""
+    data = await FiscalDataRepository(session, owner.id).get()
+    if data is None:
+        with bind_session(session):
+            data = FiscalDataFactory(owner=owner)
+        await session.flush()
+    return data
+
+
 async def load_fixtures(
     session: AsyncSession,
     *,
     owner: User | None = None,
-    issuers: int = 1,
     clients: int = 6,
     invoices: int = 20,
     seed: int | None = None,
     purge: bool = False,
     password_hash_rounds: int = 12,
 ) -> LoadReport:
-    """Generate `issuers` + `clients` subjects and `invoices` invoices between them, all
-    owned by `owner` (the demo tenant when omitted).
+    """Generate `clients` subjects and `invoices` invoices issued to them, all owned by
+    `owner` (the demo tenant when omitted), whose fiscal data is generated too if missing.
 
     The caller owns the transaction: nothing is committed here.
     """
@@ -67,15 +85,13 @@ async def load_fixtures(
         await purge_fixtures(session)
     if owner is None:
         owner = await ensure_demo_tenant(session, password_hash_rounds=password_hash_rounds)
+    issuer = (await ensure_fiscal_data(session, owner)).as_issuer()
 
     with bind_session(session):
-        issuer_pool = SubjectFactory.create_batch(issuers, owner=owner)
         client_pool = SubjectFactory.create_batch(clients, owner=owner)
         for index in range(invoices):
             InvoiceFactory(
-                owner=owner,
-                issuer=issuer_pool[index % len(issuer_pool)],
-                recipient=client_pool[index % len(client_pool)],
+                owner=owner, issuer=issuer, recipient=client_pool[index % len(client_pool)]
             )
         await session.flush()
 

@@ -21,7 +21,7 @@ from app.invoicing.document_type import DocumentType
 from app.invoicing.invoice_state import InvoiceState
 from app.invoicing.money import bcadd, bcdiv, bcmul, bcsub
 from app.invoicing.payment_method import PaymentMethod
-from app.invoicing.value_objects import Address, IdentificationDocument, InvoiceNumber
+from app.invoicing.value_objects import Address, IdentificationDocument, InvoiceNumber, Issuer
 
 
 class Subject(Base):
@@ -56,8 +56,45 @@ class Subject(Base):
         return self.full_name
 
 
+class FiscalData(Base):
+    """The tenant's own identity as invoice issuer (one row per account)."""
+
+    __tablename__ = "fiscal_data"
+
+    id: Mapped[int] = mapped_column(init=False, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("user_account.id", ondelete="CASCADE"), init=False, unique=True
+    )
+    owner: Mapped[User] = relationship(repr=False)
+    company_name: Mapped[str] = mapped_column(String(255), default="")
+    document: Mapped[IdentificationDocument] = composite(
+        mapped_column(
+            "document_type",
+            Enum(DocumentType, name="document_type", native_enum=False, length=10),
+        ),
+        mapped_column("document_number", String(100)),
+        default_factory=IdentificationDocument,
+    )
+    address: Mapped[Address] = composite(
+        mapped_column("address_street", String(255)),
+        mapped_column("address_zip_code", String(50)),
+        mapped_column("address_city", String(100)),
+        mapped_column("address_province", String(100)),
+        mapped_column("address_country_iso_code", String(2)),
+        default_factory=Address,
+    )
+
+    def as_issuer(self) -> Issuer:
+        """The snapshot stamped on invoices."""
+        return Issuer.of(self.company_name, self.document, self.address)
+
+    def __str__(self) -> str:
+        return self.company_name
+
+
 class Invoice(Base):
-    """Links an issuer and a recipient, has a date and number and holds one or more lines."""
+    """Carries a copy of the issuer's fiscal data, links a recipient, has a date and
+    number and holds one or more lines."""
 
     __tablename__ = "invoice"
 
@@ -66,10 +103,21 @@ class Invoice(Base):
         ForeignKey("user_account.id", ondelete="CASCADE"), init=False, index=True
     )
     owner: Mapped[User] = relationship(repr=False)
-    issuer_id: Mapped[int] = mapped_column(ForeignKey("subject.id"), init=False, index=True)
+    # Snapshot of the tenant's fiscal data at the time the invoice was (last) saved.
+    issuer: Mapped[Issuer] = composite(
+        mapped_column("issuer_name", String(255)),
+        mapped_column(
+            "issuer_document_type",
+            Enum(DocumentType, name="document_type", native_enum=False, length=10),
+        ),
+        mapped_column("issuer_document_number", String(100)),
+        mapped_column("issuer_address_street", String(255)),
+        mapped_column("issuer_address_zip_code", String(50)),
+        mapped_column("issuer_address_city", String(100)),
+        mapped_column("issuer_address_province", String(100)),
+        mapped_column("issuer_address_country_iso_code", String(2)),
+    )
     recipient_id: Mapped[int] = mapped_column(ForeignKey("subject.id"), init=False, index=True)
-
-    issuer: Mapped[Subject] = relationship(foreign_keys=[issuer_id], lazy="joined")
     recipient: Mapped[Subject] = relationship(foreign_keys=[recipient_id], lazy="joined")
 
     issue_date: Mapped[date] = mapped_column(Date, default_factory=date.today, index=True)

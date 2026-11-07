@@ -45,6 +45,7 @@ from app.core.config import get_settings  # noqa: E402
 from app.core.database import get_session  # noqa: E402
 from app.core.mail import InMemoryMailer, get_mailer  # noqa: E402
 from app.fixtures import (  # noqa: E402
+    FiscalDataFactory,
     InvoiceFactory,
     InvoiceLineFactory,
     SubjectFactory,
@@ -52,10 +53,20 @@ from app.fixtures import (  # noqa: E402
     bind_session,
     reseed,
 )
-from app.invoicing.models import Invoice, Subject  # noqa: E402
+from app.invoicing.document_type import DocumentType  # noqa: E402
+from app.invoicing.models import FiscalData, Invoice, Subject  # noqa: E402
+from app.invoicing.value_objects import Address, IdentificationDocument  # noqa: E402
 from app.main import create_app  # noqa: E402
 
-TABLES = ("invoice_line", "invoice", "subject", "activation_token", "app_setting", "user_account")
+TABLES = (
+    "invoice_line",
+    "invoice",
+    "subject",
+    "fiscal_data",
+    "activation_token",
+    "app_setting",
+    "user_account",
+)
 
 # Password of every account created by the `tenant` / `super_admin` fixtures and `login()`.
 PASSWORD = "correct-horse-battery"
@@ -216,6 +227,19 @@ async def super_admin(user_factory: type[UserFactory], session: AsyncSession) ->
     )
     await session.flush()
     return user
+
+
+@pytest_asyncio.fixture
+async def fiscal_data(factories: None, tenant: User, session: AsyncSession) -> FiscalData:
+    """The fiscal data of `tenant` (a fixed Spanish freelancer), needed to save invoices."""
+    data = FiscalDataFactory(
+        owner=tenant,
+        company_name="Néstor Freelance",
+        document=IdentificationDocument(DocumentType.NIF, "12345678Z"),
+        address=Address("Calle Luna 5", "35001", "Las Palmas", "Las Palmas", "ES"),
+    )
+    await session.flush()
+    return data
 
 
 @pytest_asyncio.fixture

@@ -9,17 +9,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.accounts.models import User
 from app.fixtures import InvoiceFactory
 from app.invoicing.invoice_state import InvoiceState
-from app.invoicing.models import Subject
+from app.invoicing.models import FiscalData, Subject
 from app.invoicing.value_objects import InvoiceNumber
 
 
 @pytest.fixture
-def client(tenant_client: AsyncClient) -> AsyncClient:
-    """Every invoicing endpoint needs a logged-in tenant: in this module `client` is one."""
+def client(tenant_client: AsyncClient, fiscal_data: FiscalData) -> AsyncClient:
+    """Every invoicing endpoint needs a logged-in tenant with its fiscal data set up (the
+    issuer of its invoices): in this module `client` is one."""
     return tenant_client
 
 
-ISSUER = {
+NESTOR = {
     "fullName": "Néstor Freelance",
     "document": {"type": "NIF", "number": "12345678Z"},
     "address": {
@@ -59,7 +60,6 @@ async def test_list_invoices_empty(client: AsyncClient) -> None:
 
 
 async def test_create_and_list_invoices(client: AsyncClient) -> None:
-    issuer_id = await _create_subject(client, ISSUER)
     recipient_id = await _create_subject(client, RECIPIENT)
 
     issue_date = date.today() - timedelta(days=30)
@@ -68,7 +68,6 @@ async def test_create_and_list_invoices(client: AsyncClient) -> None:
         "issueDate": issue_date.isoformat(),
         "state": "ISSUED",
         "invoiceNumber": {"serial": "F-2026", "number": "42"},
-        "issuerId": issuer_id,
         "recipientId": recipient_id,
         "notes": "Pago a 30 días.",
         "dueDate": due_date.isoformat(),
@@ -88,8 +87,11 @@ async def test_create_and_list_invoices(client: AsyncClient) -> None:
         due_date.isoformat(),
         "CARD",
     )
+    # The issuer is the account's fiscal data, stamped by the server
+    assert body["issuer"]["fullName"] == "Néstor Freelance"
     assert body["issuer"]["document"] == {"type": "NIF", "number": "12345678Z"}
     assert body["issuer"]["address"]["street"] == "Calle Luna 5"
+    assert "id" not in body["issuer"]
     assert body["recipient"]["address"]["countryIsoCode"] == "ES"
     assert [line["total"] for line in body["lines"]] == [120.99, 165.0]
     assert body["retentionRate"] == 0.0
@@ -128,7 +130,6 @@ async def test_invoices_are_ordered_newest_first_and_paginated(
     ):
         invoice_factory(
             owner=tenant,
-            issuer=subject,
             recipient=subject,
             issue_date=issued,
             invoice_number=InvoiceNumber(None, number),
@@ -161,7 +162,6 @@ async def test_list_invoices_filtered_by_state(
     invoices = [
         invoice_factory(
             owner=tenant,
-            issuer=subject,
             recipient=subject,
             issue_date=date(2026, 1, day),
             state=state,
@@ -198,9 +198,8 @@ async def test_list_invoices_filtered_by_state(
 
 
 async def test_create_draft_has_no_number(client: AsyncClient) -> None:
-    issuer_id = await _create_subject(client, ISSUER)
     recipient_id = await _create_subject(client, RECIPIENT)
-    base = {"issuerId": issuer_id, "recipientId": recipient_id, "lines": [LINE]}
+    base = {"recipientId": recipient_id, "lines": [LINE]}
 
     created = await client.post("/api/invoice", json=base)  # state defaults to DRAFT
     assert created.status_code == 201, created.text
@@ -222,9 +221,8 @@ async def test_create_draft_has_no_number(client: AsyncClient) -> None:
 
 
 async def test_issuing_assigns_the_next_number_of_the_serial(client: AsyncClient) -> None:
-    issuer_id = await _create_subject(client, ISSUER)
     recipient_id = await _create_subject(client, RECIPIENT)
-    base = {"issuerId": issuer_id, "recipientId": recipient_id, "state": "ISSUED", "lines": [LINE]}
+    base = {"recipientId": recipient_id, "state": "ISSUED", "lines": [LINE]}
 
     async def issue(invoice_number: dict | None) -> dict:
         payload = {**base, "invoiceNumber": invoice_number} if invoice_number else base
@@ -250,9 +248,8 @@ async def test_issuing_assigns_the_next_number_of_the_serial(client: AsyncClient
 
 
 async def test_retention_is_deducted_from_the_total(client: AsyncClient) -> None:
-    issuer_id = await _create_subject(client, ISSUER)
     recipient_id = await _create_subject(client, RECIPIENT)
-    base = {"issuerId": issuer_id, "recipientId": recipient_id}
+    base = {"recipientId": recipient_id}
     lines = [
         {"description": "Consultoría", "quantity": 1, "unitPrice": "999.99", "taxRate": 21},
         {"description": "Soporte", "quantity": 2, "unitPrice": 50, "taxRate": 10},
@@ -280,7 +277,7 @@ async def test_retention_is_deducted_from_the_total(client: AsyncClient) -> None
 
 
 async def test_subjects(client: AsyncClient) -> None:
-    subject_id = await _create_subject(client, ISSUER)
+    subject_id = await _create_subject(client, NESTOR)
     response = await client.get("/api/subject")
     assert response.status_code == 200
     assert [s["id"] for s in response.json()] == [subject_id]
@@ -289,7 +286,7 @@ async def test_subjects(client: AsyncClient) -> None:
 
 
 async def test_search_subjects(client: AsyncClient) -> None:
-    nestor = await _create_subject(client, ISSUER)
+    nestor = await _create_subject(client, NESTOR)
     tech = await _create_subject(client, RECIPIENT)
     underscore = await _create_subject(client, {"fullName": "Sub_Zero SL"})
 
@@ -308,10 +305,9 @@ async def test_search_subjects(client: AsyncClient) -> None:
 
 
 async def test_invoice_dates_are_validated(client: AsyncClient) -> None:
-    issuer_id = await _create_subject(client, ISSUER)
     recipient_id = await _create_subject(client, RECIPIENT)
     today = date.today()
-    base = {"issuerId": issuer_id, "recipientId": recipient_id, "lines": [LINE]}
+    base = {"recipientId": recipient_id, "lines": [LINE]}
 
     ok = await client.post(
         "/api/invoice",
@@ -338,10 +334,9 @@ async def test_invoice_dates_are_validated(client: AsyncClient) -> None:
 
 
 async def test_update_draft_and_issue_it(client: AsyncClient) -> None:
-    issuer_id = await _create_subject(client, ISSUER)
     recipient_id = await _create_subject(client, RECIPIENT)
     other_id = await _create_subject(client, {"fullName": "Otro Cliente SL"})
-    base = {"issuerId": issuer_id, "recipientId": recipient_id, "lines": [LINE]}
+    base = {"recipientId": recipient_id, "lines": [LINE]}
 
     draft = (
         await client.post(
@@ -406,9 +401,8 @@ async def test_update_draft_and_issue_it(client: AsyncClient) -> None:
 
 
 async def test_invoice_content_rules_apply_to_drafts_and_issued_alike(client: AsyncClient) -> None:
-    issuer_id = await _create_subject(client, ISSUER)
     recipient_id = await _create_subject(client, RECIPIENT)
-    base = {"issuerId": issuer_id, "recipientId": recipient_id}
+    base = {"recipientId": recipient_id}
 
     async def attempt(payload: dict, method: str = "POST", path: str = "/api/invoice"):
         response = await client.request(method, path, json={**base, **payload})
@@ -460,16 +454,15 @@ async def test_tenants_only_see_their_own_data(
     assert (await client.get(f"/api/invoice/{theirs.id}")).status_code == 404
 
     subjects = (await client.get("/api/subject")).json()
-    assert {s["id"] for s in subjects} == {mine.issuer_id, mine.recipient_id}
-    assert (await client.get(f"/api/subject/{theirs.issuer_id}")).status_code == 404
+    assert {s["id"] for s in subjects} == {mine.recipient_id}
+    assert (await client.get(f"/api/subject/{theirs.recipient_id}")).status_code == 404
 
     # Someone else's draft cannot be edited...
-    payload = {"issuerId": mine.issuer_id, "recipientId": mine.recipient_id, "lines": [LINE]}
+    payload = {"recipientId": mine.recipient_id, "lines": [LINE]}
     assert (await client.put(f"/api/invoice/{theirs.id}", json=payload)).status_code == 404
     # ... and someone else's subjects cannot be used on my invoices
     foreign = await client.post(
-        "/api/invoice",
-        json={"issuerId": mine.issuer_id, "recipientId": theirs.recipient_id, "lines": [LINE]},
+        "/api/invoice", json={"recipientId": theirs.recipient_id, "lines": [LINE]}
     )
     assert foreign.status_code == 422
     assert foreign.json()["detail"][0]["loc"] == ["body", "recipientId"]
@@ -486,10 +479,8 @@ async def test_invoice_numbers_are_sequenced_per_tenant(
             invoice_number=InvoiceNumber("F-2026", number),
             lines=1,
         )
-    issuer_id = await _create_subject(client, ISSUER)
     recipient_id = await _create_subject(client, RECIPIENT)
     payload = {
-        "issuerId": issuer_id,
         "recipientId": recipient_id,
         "state": "ISSUED",
         "invoiceNumber": {"serial": "F-2026"},
@@ -504,4 +495,5 @@ async def test_super_admins_have_no_invoicing_data(super_admin_client: AsyncClie
     for path in ("/api/invoice", "/api/subject"):
         response = await super_admin_client.get(path)
         assert response.status_code == 403, response.text
-    assert (await super_admin_client.post("/api/subject", json=ISSUER)).status_code == 403
+    assert (await super_admin_client.post("/api/subject", json=NESTOR)).status_code == 403
+    assert (await super_admin_client.get("/api/fiscal-data")).status_code == 403

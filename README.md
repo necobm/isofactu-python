@@ -24,11 +24,13 @@ The core of **issued invoices** works end to end (API + UI):
       roles (`SUPER_ADMIN` manages accounts, `ADMIN` is a tenant with its own data), account
       activation by e-mail link, pause / activate / delete accounts, per-tenant data isolation.
       See [Accounts & authentication](#accounts--authentication).
+- [x] **Fiscal data** — each tenant sets its company name, CIF/NIF and address in *Ajustes*;
+      the server stamps it as issuer on every invoice it saves (a copy lives on the invoice, so
+      issued invoices keep the data they were issued with).
 
 Partially there, with known gaps:
 
-- [ ] **Fiscal data** — the issuer is a hardcoded placeholder (`frontend/src/lib/issuer.ts`);
-      there is no settings screen, and it can't be overridden for a single invoice.
+- [ ] **Fiscal data** — cannot be overridden for a single invoice yet.
 - [ ] **Clients** — subjects can be listed and created through the API, but the *Clientes* page is
       a placeholder, new clients can't be created from the invoice form, and subjects can't be
       edited or deleted.
@@ -40,8 +42,7 @@ Partially there, with known gaps:
 
 ### Next: complete the MVP
 
-1. **Fiscal data settings** — manage the company profile (razón social, CIF, address, postal code,
-   province) used as default issuer; allow editing those details for a single invoice only.
+1. **Per-invoice issuer** — allow editing the fiscal data for a single invoice only.
 2. **Client / supplier directory** — full CRUD for subjects, distinguishing clients (issued invoices)
    from suppliers (received invoices); create a client inline from the invoice form.
 3. **Invoice series** — series as a managed entity: unique code, valid-character validation,
@@ -167,9 +168,11 @@ session (see [Accounts & authentication](#accounts--authentication)). Invoicing 
 | POST   | `/api/admin/user/{id}/send-activation`  | SUPER_ADMIN  | (Re)send the activation link                   |
 | GET    | `/api/admin/settings`                   | SUPER_ADMIN  | System settings (`{"activationLinkTtlHours": 24}`) |
 | PUT    | `/api/admin/settings`                   | SUPER_ADMIN  | Update system settings                         |
+| GET    | `/api/fiscal-data`                      | ADMIN        | The account's fiscal data (issuer of its invoices), `null` until set up |
+| PUT    | `/api/fiscal-data`                      | ADMIN        | Create / replace the fiscal data                |
 | GET    | `/api/invoice`                          | ADMIN        | Collection of invoices (`?state=&limit=&offset=`) |
 | GET    | `/api/invoice/{id}`                     | ADMIN        | Invoice detail                                 |
-| POST   | `/api/invoice`                          | ADMIN        | Create an invoice (draft or issued) with its lines |
+| POST   | `/api/invoice`                          | ADMIN        | Create an invoice (draft or issued) with its lines (`409` until the fiscal data is set) |
 | PUT    | `/api/invoice/{id}`                     | ADMIN        | Replace a draft invoice, or issue it           |
 | GET    | `/api/subject`                          | ADMIN        | Collection of subjects (`?q=&limit=&offset=`)  |
 | GET    | `/api/subject/{id}`                     | ADMIN        | Subject detail                                 |
@@ -189,7 +192,7 @@ Example — `GET /api/invoice`:
       "dueDate": "2026-07-08",
       "paymentMethod": "TRANSFER",
       "retentionRate": 0,
-      "issuer":    { "id": 1, "fullName": "Néstor Freelance",  "document": { "type": "NIF", "number": "12345678Z" },
+      "issuer":    { "fullName": "Néstor Freelance",  "document": { "type": "NIF", "number": "12345678Z" },
                      "address": { "street": "Calle Luna 5", "zipCode": "35001", "city": "Las Palmas", "province": "Las Palmas", "countryIsoCode": "ES" } },
       "recipient": { "id": 2, "fullName": "Tech Solutions SL", "document": { "type": "CIF", "number": "B12345678" }, "address": { "...": "..." } },
       "lines": [
@@ -211,6 +214,9 @@ Example — `GET /api/invoice`:
 Conventions:
 
 - JSON keys are camelCase; the TypeScript types live in `frontend/src/api/types.ts`.
+- The `issuer` of an invoice is never sent by the client: the server copies the account's
+  **fiscal data** (`PUT /api/fiscal-data`) onto the invoice when it is created or a draft is
+  saved. Issued invoices keep that copy for good, even if the fiscal data changes later.
 - `state` is the invoice lifecycle state: `DRAFT` (being prepared) or `ISSUED` (emitted). New
   invoices are created as `DRAFT` unless the payload says otherwise; `GET /api/invoice?state=`
   filters the collection (and its `total`) by state.
@@ -316,15 +322,15 @@ isofactu/
 │   │   │   ├── repository.py  #   Data access (users, system settings)
 │   │   │   └── router.py      #   /api/auth, /api/admin
 │   │   ├── invoicing/         # Invoicing module (every row belongs to a tenant)
-│   │   │   ├── models.py      #   Subject, Invoice, InvoiceLine (SQLAlchemy)
-│   │   │   ├── value_objects.py  # InvoiceNumber, IdentificationDocument, Address (composites)
+│   │   │   ├── models.py      #   FiscalData, Subject, Invoice, InvoiceLine (SQLAlchemy)
+│   │   │   ├── value_objects.py  # InvoiceNumber, IdentificationDocument, Address, Issuer (composites)
 │   │   │   ├── document_type.py  # CIF | NIF | OTHER
 │   │   │   ├── invoice_state.py  # DRAFT | ISSUED
 │   │   │   ├── payment_method.py # TRANSFER | CASH | CARD | DIRECT_DEBIT
 │   │   │   ├── money.py       #   bcmath-compatible decimal helpers
 │   │   │   ├── schemas.py     #   Pydantic models = API contract
 │   │   │   ├── repository.py  #   Data access, scoped to one tenant
-│   │   │   └── router.py      #   /api/invoice, /api/subject
+│   │   │   └── router.py      #   /api/fiscal-data, /api/invoice, /api/subject
 │   │   ├── fixtures/          # factory_boy factories + loader (shared by tests and CLI)
 │   │   └── cli.py             # Management commands (`users create-super-admin`, `fixtures load`)
 │   ├── alembic/               # Migrations (`alembic revision --autogenerate -m "..."`)
@@ -337,7 +343,7 @@ isofactu/
 │   │   ├── TenantApp.tsx      # ADMIN shell: dashboard, invoices...
 │   │   ├── AdminApp.tsx       # SUPER_ADMIN shell: accounts, settings
 │   │   ├── api/               # Typed API client (api, auth, admin) + contract types
-│   │   ├── pages/             # Login, ActivateAccount, Dashboard, Invoices, InvoiceForm, admin/
+│   │   ├── pages/             # Login, ActivateAccount, Dashboard, Invoices, InvoiceForm, FiscalDataSettings, admin/
 │   │   ├── components/        # TopNav, forms, dashboard widgets, invoice form / table, admin/
 │   │   └── lib/               # AuthProvider + useAuth, tiny router, formatting, useApi hook
 │   └── vite.config.ts         # Builds to ../public, proxies /api in dev
@@ -347,8 +353,9 @@ isofactu/
 ## Key concepts
 
 - **User / account** — someone who can log in. `ADMIN` users are tenants: every subject and invoice has one as `owner`. `SUPER_ADMIN` users only manage accounts.
-- **Subject** — a company or person identified by NIF/CIF that acts as issuer or recipient on an invoice.
-- **Invoice** — links an issuer and a recipient, has a date, an invoice number, a state (`DRAFT` → `ISSUED`) and an optional IRPF retention rate, and contains one or more lines.
+- **FiscalData** — the tenant's own identity (company name, CIF/NIF, address); one per account, edited in *Ajustes*.
+- **Subject** — a company or person identified by NIF/CIF that acts as recipient (client) of an invoice.
+- **Invoice** — carries a copy of the issuer's fiscal data (**Issuer** value object), links a recipient, has a date, an invoice number, a state (`DRAFT` → `ISSUED`) and an optional IRPF retention rate, and contains one or more lines.
 - **InvoiceLine** — a concept with description, quantity, unit price and VAT rate. Amounts are computed with fixed-point decimals.
 - **InvoiceNumber** — value object with an optional serial and a sequential number (`F-2026-42`); unassigned while the invoice is a draft.
 
@@ -360,10 +367,11 @@ names and addresses) and consumed from two places:
 
 **1. Manually, through the management CLI** (inside the backend container) — to fill a
 development database. Everything generated belongs to a demo tenant, `demo@isofactu.local`
-(password `demo1234`), created on first use so that you can log in and browse the data:
+(password `demo1234`), created on first use — with generated fiscal data — so that you can log
+in and browse the data:
 
 ```bash
-make fixtures                                   # purge + 1 issuer, 6 clients, 20 invoices, seed 42
+make fixtures                                   # purge + 6 clients, 20 invoices, seed 42
 make fixtures ARGS="--invoices 50 --clients 10" # same, with options
 make fixtures-purge                             # remove all invoicing data (accounts are kept)
 
@@ -397,13 +405,15 @@ def test_pure():                          # no database needed
 |--------------------------------------------------------------|--------------------------------------------|
 | `subject_factory`, `invoice_factory`, `invoice_line_factory`, `user_factory` | Factory classes bound to the test session |
 | `tenant`, `other_tenant`, `super_admin`                      | Persisted, active accounts (password `PASSWORD`) |
+| `fiscal_data`                                                | The fiscal data of `tenant` (needed to save invoices through the API) |
 | `subject`, `invoice`                                         | One persisted instance, owned by `tenant`  |
 | `session`, `client`                                          | Async SQLAlchemy session / anonymous HTTP test client |
 | `tenant_client`, `super_admin_client`                        | HTTP test clients already logged in        |
 | `mailer`                                                     | `InMemoryMailer`: e-mails sent during the test (`mailer.outbox`) |
 
-`InvoiceFactory()` gives the invoice and its generated parties the same (generated) owner; pass
-`owner=tenant` to pin it. The bcrypt work factor is lowered to 4 rounds in the test-suite.
+`InvoiceFactory()` gives the invoice and its generated recipient the same (generated) owner and a
+generated issuer snapshot; pass `owner=tenant` / `issuer=fiscal_data.as_issuer()` to pin them.
+The bcrypt work factor is lowered to 4 rounds in the test-suite.
 
 Factories only `session.add()` — they never flush or commit on their own, so they behave the same
 with the async session used by the app. Adding a new entity means adding one factory class; both

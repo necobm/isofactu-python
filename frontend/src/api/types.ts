@@ -30,9 +30,21 @@ export interface Address {
   countryIsoCode: string
 }
 
-export interface Subject {
-  id: number
+/** Name, identification and address of a party of an invoice. */
+export interface Party {
   fullName: string
+  document: IdentificationDocument
+  address: Address
+}
+
+/** A stored client / supplier. */
+export interface Subject extends Party {
+  id: number
+}
+
+/** The tenant's own identity as invoice issuer (`null` until set up). */
+export interface FiscalData {
+  companyName: string
   document: IdentificationDocument
   address: Address
 }
@@ -54,7 +66,8 @@ export interface Invoice {
   /** `null` while the invoice is a draft. */
   invoiceNumber: InvoiceNumber | null
   state: InvoiceState
-  issuer: Subject
+  /** Copy of the account's fiscal data taken when the invoice was (last) saved. */
+  issuer: Party
   recipient: Subject
   notes: string
   dueDate: string | null // ISO date (YYYY-MM-DD)
@@ -140,7 +153,7 @@ export interface InvoiceInput {
    * sequential number of the serial assigned by the server.
    */
   invoiceNumber?: { serial?: string | null; number?: string | null }
-  issuerId: number
+  /** The issuer is not sent: the server stamps the account's fiscal data. */
   recipientId: number
   notes?: string
   dueDate?: string | null
@@ -154,6 +167,13 @@ export interface SubjectInput {
   fullName: string
   document?: Partial<IdentificationDocument>
   address?: Partial<Address>
+}
+
+export interface FiscalDataInput {
+  companyName: string
+  document: IdentificationDocument
+  /** `province` is optional; the rest is required by the server. */
+  address: Address
 }
 
 export interface LoginInput {
