@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react'
-import { api, ApiError, type Client, type ClientInput, type DocumentType } from '@/api'
+import { useEffect, useMemo, useState } from 'react'
+import { api, ApiError, geo, type Client, type ClientInput, type DocumentType } from '@/api'
 import { Field, INPUT_CLASS } from '@/components/form'
+import SearchSelect from '@/components/SearchSelect'
+import { isValidCif, isValidNif, normaliseId } from '@/lib/spanishIds'
 import { useApi } from '@/lib/useApi'
 
 const DOCUMENT_TYPES: { value: DocumentType; label: string }[] = [
@@ -43,7 +45,10 @@ function fromClient(client: Client): FormState {
 function toInput(form: FormState): ClientInput {
   return {
     fullName: form.fullName.trim(),
-    document: { type: form.documentType, number: form.documentNumber.trim().toUpperCase() },
+    document: {
+      type: form.documentType,
+      number: form.documentType === 'OTHER' ? form.documentNumber.trim() : normaliseId(form.documentNumber),
+    },
     address: {
       street: form.street.trim(),
       zipCode: form.zipCode.trim(),
@@ -88,9 +93,61 @@ export default function ClientForm({ clientId, onBack, onSaved }: ClientFormProp
     setError(null)
   }
 
+  // -- reference data: provinces depend on the country, cities on the province -------------
+  const countries = useApi((signal) => geo.countries(signal), [])
+  const country = useMemo(
+    () => countries.data?.find((c) => c.code === form.countryIsoCode) ?? null,
+    [countries.data, form.countryIsoCode],
+  )
+  const provinces = useApi(
+    (signal) => (form.countryIsoCode ? geo.provinces(form.countryIsoCode, signal) : Promise.resolve([])),
+    [form.countryIsoCode],
+  )
+  const provinceOptions = useMemo(
+    () => (provinces.data ?? []).map((p) => ({ value: p.name, label: p.name })),
+    [provinces.data],
+  )
+  /** Countries without ISO provinces take a free-text province. */
+  const freeTextProvince =
+    form.countryIsoCode !== '' && provinces.status === 'success' && provinces.data.length === 0
+  const province = provinces.data?.find((p) => p.name === form.province) ?? null
+  const provinceCode = province?.code ?? null
+  const cities = useApi(
+    (signal) =>
+      provinceCode ? geo.cities(form.countryIsoCode, provinceCode, signal) : Promise.resolve([] as string[]),
+    [form.countryIsoCode, provinceCode],
+  )
+  const cityOptions = useMemo(() => (cities.data ?? []).map((c) => ({ value: c, label: c })), [cities.data])
+
+  function changeCountry(code: string | null) {
+    // A new country means a new set of provinces and cities
+    setForm((prev) => ({ ...prev, countryIsoCode: code ?? '', province: '', city: '' }))
+    setError(null)
+  }
+
+  function changeProvince(name: string | null) {
+    setForm((prev) => ({ ...prev, province: name ?? '', city: '' }))
+    setError(null)
+  }
+
   function validate(input: ClientInput): string | null {
-    if (!input.fullName) return 'Indica el nombre o razón social del cliente.'
-    if (!/^[A-Z]{2}$/.test(input.address.countryIsoCode)) return 'El país es un código de dos letras (ES, PT, FR…).'
+    if (input.fullName.length < 2) return 'Indica el nombre o razón social del cliente.'
+    if (!input.document.number) return 'Indica el NIF / CIF del cliente.'
+    if (input.document.type === 'NIF' && !isValidNif(input.document.number)) {
+      return 'El NIF no es válido: comprueba los dígitos y la letra (DNI: 8 dígitos y letra; NIE: X/Y/Z, 7 dígitos y letra).'
+    }
+    if (input.document.type === 'CIF' && !isValidCif(input.document.number)) {
+      return 'El CIF no es válido: comprueba la letra, los 7 dígitos y el carácter de control.'
+    }
+    if (input.address.street.length < 3) return 'Indica la dirección del cliente.'
+    if (!input.address.zipCode) return 'Indica el código postal.'
+    if (!input.address.countryIsoCode) return 'Selecciona el país.'
+    if (country?.postalCodePattern && !new RegExp(country.postalCodePattern).test(input.address.zipCode)) {
+      return `El código postal no tiene el formato de ${country.name}.`
+    }
+    if (!input.address.province) return freeTextProvince ? 'Indica la provincia.' : 'Selecciona la provincia.'
+    if (!freeTextProvince && !province) return 'Selecciona una provincia de la lista.'
+    if (!input.address.city) return cityOptions.length ? 'Selecciona o escribe la ciudad.' : 'Indica la ciudad.'
     return null
   }
 
@@ -207,14 +264,20 @@ export default function ClientForm({ clientId, onBack, onSaved }: ClientFormProp
                     onChange={(e) => set('documentNumber', e.target.value)}
                     disabled={disabled}
                     className="font-mono uppercase"
-                    hint="Necesario para facturar a empresas y profesionales."
+                    hint={
+                      form.documentType === 'NIF'
+                        ? 'DNI (8 dígitos y letra) o NIE (X/Y/Z, 7 dígitos y letra).'
+                        : form.documentType === 'CIF'
+                          ? 'Letra, 7 dígitos y carácter de control (p. ej. B12345674).'
+                          : 'Identificador fiscal extranjero u otro documento.'
+                    }
                   />
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Address */}
+          {/* Address: street, postal code, country, province (by country), city (by province) */}
           <div className="col-span-12 lg:col-span-5">
             <div className="bg-white rounded-xl border border-slate-200 px-5 py-4 space-y-4">
               <h2 className="text-sm font-semibold text-slate-700">Dirección</h2>
@@ -224,6 +287,7 @@ export default function ClientForm({ clientId, onBack, onSaved }: ClientFormProp
                 type="text"
                 autoComplete="street-address"
                 maxLength={255}
+                required
                 value={form.street}
                 onChange={(e) => set('street', e.target.value)}
                 disabled={disabled}
@@ -235,49 +299,88 @@ export default function ClientForm({ clientId, onBack, onSaved }: ClientFormProp
                   type="text"
                   autoComplete="postal-code"
                   maxLength={50}
+                  required
                   value={form.zipCode}
                   onChange={(e) => set('zipCode', e.target.value)}
                   disabled={disabled}
                 />
                 <div className="col-span-2">
-                  <Field
-                    id="client-city"
-                    label="Ciudad"
-                    type="text"
-                    autoComplete="address-level2"
-                    maxLength={100}
-                    value={form.city}
-                    onChange={(e) => set('city', e.target.value)}
+                  <SearchSelect
+                    id="client-country"
+                    label="País"
+                    options={(countries.data ?? []).map((c) => ({ value: c.code, label: c.name }))}
+                    value={form.countryIsoCode || null}
+                    onChange={changeCountry}
+                    placeholder="Buscar país…"
+                    loading={countries.status === 'loading'}
                     disabled={disabled}
+                    required
+                    noOptionsMessage="Ningún país coincide"
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-4">
-                <div className="col-span-2">
-                  <Field
-                    id="client-province"
-                    label="Provincia"
-                    type="text"
-                    autoComplete="address-level1"
-                    maxLength={100}
-                    value={form.province}
-                    onChange={(e) => set('province', e.target.value)}
-                    disabled={disabled}
-                  />
-                </div>
+              {freeTextProvince ? (
                 <Field
-                  id="client-country"
-                  label="País"
+                  id="client-province"
+                  label="Provincia"
                   type="text"
-                  autoComplete="country"
-                  maxLength={2}
-                  value={form.countryIsoCode}
-                  onChange={(e) => set('countryIsoCode', e.target.value)}
+                  autoComplete="address-level1"
+                  maxLength={100}
+                  required
+                  value={form.province}
+                  onChange={(e) => set('province', e.target.value)}
                   disabled={disabled}
-                  className="uppercase"
-                  hint="Código ISO (ES…)"
+                  hint="Este país no tiene provincias definidas: escríbela."
                 />
-              </div>
+              ) : (
+                <SearchSelect
+                  id="client-province"
+                  label="Provincia"
+                  options={provinceOptions}
+                  value={form.province || null}
+                  onChange={changeProvince}
+                  placeholder={form.countryIsoCode ? 'Buscar provincia…' : 'Selecciona primero el país'}
+                  loading={provinces.status === 'loading'}
+                  disabled={disabled || !form.countryIsoCode}
+                  required
+                  noOptionsMessage="Ninguna provincia coincide"
+                />
+              )}
+              {freeTextProvince || cityOptions.length === 0 ? (
+                <Field
+                  id="client-city"
+                  label="Ciudad"
+                  type="text"
+                  autoComplete="address-level2"
+                  maxLength={100}
+                  required
+                  value={form.city}
+                  onChange={(e) => set('city', e.target.value)}
+                  disabled={disabled || !form.province}
+                  hint={
+                    !form.province
+                      ? 'Selecciona primero la provincia.'
+                      : cities.status === 'loading'
+                        ? 'Cargando ciudades…'
+                        : 'No hay lista de ciudades para esta provincia: escríbela.'
+                  }
+                />
+              ) : (
+                <SearchSelect
+                  id="client-city"
+                  label="Ciudad"
+                  options={cityOptions}
+                  value={form.city || null}
+                  onChange={(city) => set('city', city ?? '')}
+                  placeholder="Buscar ciudad…"
+                  loading={cities.status === 'loading'}
+                  disabled={disabled}
+                  required
+                  creatable
+                  noOptionsMessage="Ninguna ciudad coincide: escríbela para usarla"
+                  hint="Si no aparece en la lista, escríbela y pulsa Intro."
+                />
+              )}
             </div>
           </div>
         </form>

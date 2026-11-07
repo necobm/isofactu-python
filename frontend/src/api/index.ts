@@ -1,4 +1,5 @@
 export * from './types'
 export { api } from './invoices'
 export { auth, admin } from './accounts'
+export { geo, type Country, type Province } from './geo'
 export { ApiError, onUnauthorized } from './client'

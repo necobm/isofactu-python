@@ -33,6 +33,8 @@ from app.accounts.account_status import AccountStatus
 from app.accounts.models import User
 from app.accounts.role import Role
 from app.clients.models import Client
+from app.geo import service as geo
+from app.invoicing import spanish_ids
 from app.invoicing.document_type import DocumentType
 from app.invoicing.invoice_state import InvoiceState
 from app.invoicing.models import FiscalData, Invoice, InvoiceLine, Serial, Subject
@@ -96,33 +98,25 @@ def reseed(seed: int) -> None:
 
 # -- Spanish tax identifiers ------------------------------------------------------------
 # Faker's es_ES `nif()` / `cif()` draw from the *unseeded* global random module, which
-# breaks reproducibility, so the (short) algorithms are implemented here on the seeded RNG.
-
-NIF_CONTROL = "TRWAGMYFPDXBNJZSQVHLCKE"
-CIF_LETTERS = "ABCDEFGHJNPQRSUVW"
-CIF_LETTER_CONTROL = "JABCDEFGHI"
-CIF_CONTROL_IS_LETTER = set("KPQSNW")
-CIF_CONTROL_IS_DIGIT = set("ABEH")
+# breaks reproducibility, so the (short) algorithms are run here on the seeded RNG.
 
 
 def spanish_nif(rng: random.Random) -> str:
     body = rng.randrange(0, 100_000_000)
-    return f"{body:08d}{NIF_CONTROL[body % 23]}"
+    return f"{body:08d}{spanish_ids.nif_control(body)}"
 
 
 def spanish_cif(rng: random.Random) -> str:
-    letter = rng.choice(CIF_LETTERS)
-    digits = [rng.randrange(10) for _ in range(7)]
-    even_sum = sum(digits[1::2])
-    odd_sum = sum(sum(divmod(d * 2, 10)) for d in digits[0::2])
-    control = (10 - (even_sum + odd_sum) % 10) % 10
-    if letter in CIF_CONTROL_IS_LETTER:
-        control_char = CIF_LETTER_CONTROL[control]
-    elif letter in CIF_CONTROL_IS_DIGIT:
+    letter = rng.choice(spanish_ids.CIF_LETTERS)
+    digits = "".join(str(rng.randrange(10)) for _ in range(7))
+    control = spanish_ids.cif_control(digits)
+    if letter in spanish_ids.CIF_CONTROL_IS_LETTER:
+        control_char = spanish_ids.CIF_LETTER_CONTROL[control]
+    elif letter in spanish_ids.CIF_CONTROL_IS_DIGIT:
         control_char = str(control)
     else:
-        control_char = rng.choice([str(control), CIF_LETTER_CONTROL[control]])
-    return f"{letter}{''.join(map(str, digits))}{control_char}"
+        control_char = rng.choice([str(control), spanish_ids.CIF_LETTER_CONTROL[control]])
+    return f"{letter}{digits}{control_char}"
 
 
 class BaseFactory(SQLAlchemyModelFactory):
@@ -142,7 +136,8 @@ class AddressFactory(factory.Factory):
     street = factory.Faker("street_address", locale=LOCALE)
     zip_code = factory.Faker("postcode", locale=LOCALE)
     city = factory.Faker("city", locale=LOCALE)
-    province = factory.Faker("administrative_unit", locale=LOCALE)
+    # A real province name, as the client forms require
+    province = fuzzy.FuzzyChoice([p.name for p in geo.provinces("ES")])
     country_iso_code = "ES"
 
 

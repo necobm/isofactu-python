@@ -20,7 +20,17 @@ NESTOR = {
         "province": "Las Palmas",
     },
 }
-TECH = {"fullName": "Tech Solutions SL", "document": {"type": "CIF", "number": "B12345678"}}
+TECH = {
+    "fullName": "Tech Solutions SL",
+    "document": {"type": "CIF", "number": "B12345674"},
+    "address": {
+        "street": "Gran Vía 2",
+        "zipCode": "48001",
+        "city": "Bilbao",
+        "province": "Vizcaya",
+        "countryIsoCode": "ES",
+    },
+}
 LINE = {"description": "Consultoría", "quantity": 1, "unitPrice": 100, "taxRate": 21}
 
 
@@ -42,8 +52,8 @@ async def test_client_crud(tenant_client: AsyncClient) -> None:
     assert created["fullName"] == "Néstor Freelance"
     assert created["document"] == {"type": "NIF", "number": "12345678Z"}
     assert created["address"]["countryIsoCode"] == "ES"  # default
-    minimal = await _create(tenant_client, {"fullName": "Otro Cliente SL"})
-    assert minimal["document"] == {"type": "NIF", "number": ""}
+    minimal = await _create(tenant_client, {**TECH, "fullName": "Otro Cliente SL"})
+    assert minimal["document"] == {"type": "CIF", "number": "B12345674"}
 
     listed = (await tenant_client.get("/api/client")).json()
     assert listed["total"] == 2
@@ -62,10 +72,6 @@ async def test_client_crud(tenant_client: AsyncClient) -> None:
     assert updated.json()["fullName"] == "Néstor Renombrado"
     assert (await tenant_client.put("/api/client/999", json=NESTOR)).status_code == 404
 
-    for invalid in ({}, {"fullName": "  "}, {**NESTOR, "document": {"type": "DNI"}}):
-        response = await tenant_client.post("/api/client", json=invalid)
-        assert response.status_code == 422, invalid
-
     deleted = await tenant_client.delete(f"/api/client/{created['id']}")
     assert deleted.status_code == 204
     assert (await tenant_client.get(f"/api/client/{created['id']}")).status_code == 404
@@ -76,7 +82,7 @@ async def test_client_crud(tenant_client: AsyncClient) -> None:
 async def test_search_clients(tenant_client: AsyncClient) -> None:
     nestor = (await _create(tenant_client, NESTOR))["id"]
     tech = (await _create(tenant_client, TECH))["id"]
-    underscore = (await _create(tenant_client, {"fullName": "Sub_Zero SL"}))["id"]
+    underscore = (await _create(tenant_client, {**TECH, "fullName": "Sub_Zero SL"}))["id"]
 
     async def search(q: str) -> tuple[int, list[int]]:
         response = await tenant_client.get("/api/client", params={"q": q})
@@ -85,11 +91,91 @@ async def test_search_clients(tenant_client: AsyncClient) -> None:
 
     assert await search("tech") == (1, [tech])  # case-insensitive, partial match on the name
     assert await search("  néstor ") == (1, [nestor])
-    assert await search("b1234") == (1, [tech])  # or on the document number
+    assert await search("b1234") == (2, [underscore, tech])  # or on the document number
     assert await search("Sub_") == (1, [underscore])  # LIKE metacharacters are literal
     assert await search("%") == (0, [])
     assert await search("") == (3, [nestor, underscore, tech])  # blank = no filter, by name
     assert await search("nobody") == (0, [])
+
+
+async def test_client_validation(tenant_client: AsyncClient) -> None:
+    async def rejected(payload: dict) -> list[tuple]:
+        response = await tenant_client.post("/api/client", json=payload)
+        assert response.status_code == 422, response.text
+        return [(tuple(e["loc"]), e["msg"]) for e in response.json()["detail"]]
+
+    def locs(errors: list[tuple]) -> set[tuple]:
+        return {loc for loc, _ in errors}
+
+    # Everything is required
+    errors = await rejected({})
+    assert {("body", "fullName"), ("body", "document"), ("body", "address")} <= locs(errors)
+    assert ("body", "fullName") in locs(await rejected({**TECH, "fullName": " x "}))
+    for field in ("street", "zipCode", "city", "province"):
+        errors = await rejected({**TECH, "address": {**TECH["address"], field: ""}})
+        assert ("body", "address", field) in locs(errors), field
+    assert ("body", "document", "number") in locs(
+        await rejected({**TECH, "document": {"type": "CIF", "number": ""}})
+    )
+    assert ("body", "document", "type") in locs(
+        await rejected({**TECH, "document": {"type": "DNI", "number": "12345678Z"}})
+    )
+
+    # NIF / CIF check characters
+    for number in ("12345678A", "1234567Z", "X1234567A", "B12345674"):
+        errors = await rejected({**TECH, "document": {"type": "NIF", "number": number}})
+        assert any("NIF" in msg for _, msg in errors), number
+    for number in ("B12345678", "Z1234567A", "12345678Z"):
+        errors = await rejected({**TECH, "document": {"type": "CIF", "number": number}})
+        assert any("CIF" in msg for _, msg in errors), number
+    # ... normalised on the way in
+    nie = await _create(
+        tenant_client, {**TECH, "document": {"type": "NIF", "number": " x-1234567-l "}}
+    )
+    assert nie["document"] == {"type": "NIF", "number": "X1234567L"}
+    other = await _create(
+        tenant_client, {**TECH, "document": {"type": "OTHER", "number": "FR 12 345"}}
+    )
+    assert other["document"]["number"] == "FR 12 345"  # foreign identifiers are not checked
+
+    # Address against the reference data
+    errors = await rejected({**TECH, "address": {**TECH["address"], "countryIsoCode": "XX"}})
+    assert any("unknown country" in msg for _, msg in errors)
+    errors = await rejected({**TECH, "address": {**TECH["address"], "zipCode": "4800"}})
+    assert any("postal code" in msg for _, msg in errors)
+    errors = await rejected({**TECH, "address": {**TECH["address"], "province": "Narnia"}})
+    assert any("province" in msg for _, msg in errors)
+    # Provinces match by name (accents aside) or ISO code and are stored by their name
+    by_code = await _create(
+        tenant_client, {**TECH, "address": {**TECH["address"], "province": "ES-BI"}}
+    )
+    assert by_code["address"]["province"] == "Vizcaya"
+    loose = await _create(
+        tenant_client,
+        {**TECH, "address": {**TECH["address"], "province": "alava", "zipCode": "01001"}},
+    )
+    assert loose["address"]["province"] == "Álava"
+    # Countries without ISO provinces take any province; postal codes follow the country
+    portugal = {
+        "street": "Rua Augusta 1",
+        "zipCode": "1100-048",
+        "city": "Lisboa",
+        "province": "Lisboa",
+        "countryIsoCode": "PT",
+    }
+    assert (await _create(tenant_client, {**TECH, "address": portugal}))["address"][
+        "countryIsoCode"
+    ] == "PT"
+    vatican = {
+        "street": "Via della Conciliazione 1",
+        "zipCode": "00120",
+        "city": "Ciudad del Vaticano",
+        "province": "—",
+        "countryIsoCode": "VA",
+    }
+    assert (await _create(tenant_client, {**TECH, "address": vatican}))["address"][
+        "province"
+    ] == "—"
 
 
 async def test_clients_are_per_tenant(
@@ -117,7 +203,7 @@ async def test_invoices_get_their_own_copy_of_the_client(
     ).json()
     for invoice in (draft, issued):
         assert invoice["recipient"]["fullName"] == "Tech Solutions SL"
-        assert invoice["recipient"]["document"] == {"type": "CIF", "number": "B12345678"}
+        assert invoice["recipient"]["document"] == {"type": "CIF", "number": "B12345674"}
     # One copy per invoice, never the client row itself
     assert draft["recipient"]["id"] != issued["recipient"]["id"]
     assert await session.scalar(select(func.count()).select_from(Subject)) == 2

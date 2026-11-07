@@ -9,6 +9,8 @@ pydantic-settings>=2.3,<3.0
 # authentication: password hashing + signed session cookies
 bcrypt>=4.1,<6.0
 PyJWT>=2.8,<3.0
+# countries / provinces (ISO 3166) for address forms
+pycountry>=24.6,<27.0
 # fixtures + management CLI
 factory_boy>=3.3,<4.0
 typer>=0.12,<1.0

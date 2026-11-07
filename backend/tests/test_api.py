@@ -31,7 +31,17 @@ NESTOR = {
         "province": "Las Palmas",
     },
 }
-RECIPIENT = {"fullName": "Tech Solutions SL", "document": {"type": "CIF", "number": "B12345678"}}
+RECIPIENT = {
+    "fullName": "Tech Solutions SL",
+    "document": {"type": "CIF", "number": "B12345674"},
+    "address": {
+        "street": "Gran Vía 2",
+        "zipCode": "48001",
+        "city": "Bilbao",
+        "province": "Vizcaya",
+        "countryIsoCode": "ES",
+    },
+}
 # Minimal valid line: every invoice (draft or issued) needs one with a concept and an amount.
 LINE = {"description": "Consultoría", "quantity": 1, "unitPrice": 100, "taxRate": 21}
 
@@ -330,7 +340,7 @@ async def test_invoice_dates_are_validated(client: AsyncClient) -> None:
 
 async def test_update_draft_and_issue_it(client: AsyncClient, serial: Serial) -> None:
     client_id = await _create_client(client, RECIPIENT)
-    other_id = await _create_client(client, {"fullName": "Otro Cliente SL"})
+    other_id = await _create_client(client, {**RECIPIENT, "fullName": "Otro Cliente SL"})
     base = {"clientId": client_id, "lines": [LINE]}
 
     draft = (

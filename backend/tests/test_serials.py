@@ -7,7 +7,17 @@ from httpx import AsyncClient
 from app.invoicing.models import FiscalData
 from tests.conftest import login
 
-RECIPIENT = {"fullName": "Tech Solutions SL", "document": {"type": "CIF", "number": "B12345678"}}
+RECIPIENT = {
+    "fullName": "Tech Solutions SL",
+    "document": {"type": "CIF", "number": "B12345674"},
+    "address": {
+        "street": "Gran Vía 2",
+        "zipCode": "48001",
+        "city": "Bilbao",
+        "province": "Vizcaya",
+        "countryIsoCode": "ES",
+    },
+}
 LINE = {"description": "Consultoría", "quantity": 1, "unitPrice": 100, "taxRate": 21}
 TODAY = date.today()
 

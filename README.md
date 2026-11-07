@@ -6,6 +6,11 @@ The goal is a B2B SaaS that gives Spanish *autónomos* a single place to manage 
 both issued (income) and received (expenses) — plus tools to keep track of and forecast their
 expenses and taxes (VAT, IRPF).
 
+## Important Notice
+
+> All data regarding invoices, clients, companies in this project, are not real. They are dynamically
+> generate using sample data.
+
 ## Roadmap
 
 ### Where we are today
@@ -69,10 +74,11 @@ Partially there, with known gaps:
 |------------|---------------------------------------------------------|
 | Backend    | Python 3.12, FastAPI, Uvicorn                           |
 | ORM        | SQLAlchemy 2 (async, psycopg 3) + Alembic migrations    |
-| Frontend   | React 19 + TypeScript, Vite 5, Tailwind CSS 3           |
+| Frontend   | React 19 + TypeScript, Vite 5, Tailwind CSS 3, react-select |
 | Charts     | Recharts                                                |
 | Database   | PostgreSQL 17 (Docker)                                  |
 | Auth       | bcrypt password hashes, signed HttpOnly session cookie (PyJWT) |
+| Geo data   | ISO 3166 countries / provinces (pycountry, Spanish names), GeoNames postal codes and localities |
 | E-mail     | SMTP (stdlib) — Mailpit in development                  |
 | Runtime    | Docker Compose                                          |
 
@@ -177,6 +183,9 @@ session (see [Accounts & authentication](#accounts--authentication)). Invoicing 
 | GET    | `/api/serial/{id}`                      | ADMIN        | Serial detail                                  |
 | PUT    | `/api/serial/{id}`                      | ADMIN        | Update a serial (`409` when changing prefix / suffix / initial number of one in use) |
 | DELETE | `/api/serial/{id}`                      | ADMIN        | Delete a serial (`409` when issued invoices use it) |
+| GET    | `/api/geo/countries`                    | session      | ISO countries named in Spanish, with postal code patterns |
+| GET    | `/api/geo/countries/{cc}/provinces`     | session      | Lowest-level ISO 3166-2 divisions of a country (Spain: provinces) |
+| GET    | `/api/geo/countries/{cc}/provinces/{p}/cities` | session | Known localities of a province (suggestions)  |
 | GET    | `/api/client`                           | ADMIN        | Collection of clients (`?q=&limit=&offset=`)   |
 | GET    | `/api/client/{id}`                      | ADMIN        | Client detail                                  |
 | POST   | `/api/client`                           | ADMIN        | Create a client                                |
@@ -262,6 +271,27 @@ of the Invoicing module that belongs to that invoice. Editing or deleting a clie
 never changes an invoice — issued ones show the client exactly as it was when they were issued.
 A draft re-saved with a `clientId` refreshes its copy (in place when the copy is its own; legacy
 drafts sharing a subject with another invoice get a fresh copy instead).
+
+**Every field of a client is required and validated**: the name (2+ characters); the
+identification — a NIF (DNI or NIE) or CIF is normalised (upper-case, no blanks or hyphens) and
+its check character verified (`app/invoicing/spanish_ids.py`), `OTHER` accepts any foreign
+identifier; and the address — street, postal code (checked against the country's format),
+country (an ISO code), province and city.
+
+The form's address block goes *Dirección → Código postal → País → Provincia → Ciudad*, with
+searchable selects (react-select) fed by the **Geo module** (`app/geo`, `/api/geo/*`):
+
+- **Countries**: all ISO 3166-1 countries, labelled with their Spanish name (`pycountry`'s
+  translations); the ISO code is what gets stored.
+- **Provinces** depend on the country: the lowest-level ISO 3166-2 divisions (for Spain, the
+  50 provinces plus Ceuta and Melilla). The province *name* is stored and validated against
+  that list; countries without ISO divisions get a free-text province.
+- **Cities** depend on the province and act as suggestions: the user can type a locality that
+  is not listed. The list comes from GeoNames (`scripts/build_geo_data.py` regenerates
+  `app/geo/data/`). GeoNames only records the *autonomous community* of Spanish localities,
+  so the list for a Spanish province covers its whole community; other countries have no list
+  yet. To get exact per-province lists, replace `app/geo/data/cities.json` with a file keyed
+  by ISO province codes (e.g. built from the INE municipality register).
 
 Migration `0008` copies every pre-existing subject into the client directory and drops the ones
 no invoice refers to.
@@ -377,6 +407,7 @@ isofactu/
 │   │   │   ├── repository.py  #   Data access (users, system settings)
 │   │   │   └── router.py      #   /api/auth, /api/admin
 │   │   ├── clients/           # Clients module: the client directory (/api/client)
+│   │   ├── geo/               # Geo module: countries, provinces, cities (+ data/, see scripts/)
 │   │   ├── invoicing/         # Invoicing module (every row belongs to a tenant)
 │   │   │   ├── models.py      #   FiscalData, Serial, Subject (recipient copy), Invoice, InvoiceLine
 │   │   │   ├── value_objects.py  # InvoiceNumber, IdentificationDocument, Address, Issuer (composites)
@@ -384,12 +415,14 @@ isofactu/
 │   │   │   ├── invoice_state.py  # DRAFT | ISSUED
 │   │   │   ├── payment_method.py # TRANSFER | CASH | CARD | DIRECT_DEBIT
 │   │   │   ├── money.py       #   bcmath-compatible decimal helpers
+│   │   │   ├── spanish_ids.py #   NIF / NIE / CIF validation
 │   │   │   ├── schemas.py     #   Pydantic models = API contract
 │   │   │   ├── repository.py  #   Data access, scoped to one tenant
 │   │   │   └── router.py      #   /api/fiscal-data, /api/serial, /api/invoice, /api/subject
 │   │   ├── fixtures/          # factory_boy factories + loader (shared by tests and CLI)
 │   │   └── cli.py             # Management commands (`users create-super-admin`, `fixtures load`)
 │   ├── alembic/               # Migrations (`alembic revision --autogenerate -m "..."`)
+│   ├── scripts/               # build_geo_data.py: regenerates app/geo/data from GeoNames
 │   ├── tests/                 # pytest (unit + API integration against PostgreSQL)
 │   ├── Dockerfile
 │   └── pyproject.toml
@@ -400,7 +433,7 @@ isofactu/
 │   │   ├── AdminApp.tsx       # SUPER_ADMIN shell: accounts, settings
 │   │   ├── api/               # Typed API client (api, auth, admin) + contract types
 │   │   ├── pages/             # Login, ActivateAccount, Dashboard, Invoices, InvoiceForm, Clients, ClientForm, settings pages, admin/
-│   │   ├── components/        # TopNav, forms, dashboard widgets, invoice form / table, admin/
+│   │   ├── components/        # TopNav, forms, SearchSelect (react-select), dashboard widgets, invoice form / table, admin/
 │   │   └── lib/               # AuthProvider + useAuth, tiny router, formatting, useApi hook
 │   └── vite.config.ts         # Builds to ../public, proxies /api in dev
 └── public/                    # Built frontend assets (generated, git-ignored)

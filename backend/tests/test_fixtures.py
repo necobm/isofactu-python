@@ -19,7 +19,8 @@ from app.fixtures import (
     purge_fixtures,
     reseed,
 )
-from app.fixtures.factories import NIF_CONTROL, spanish_cif, spanish_nif
+from app.fixtures.factories import spanish_cif, spanish_nif
+from app.invoicing import spanish_ids
 from app.invoicing.document_type import DocumentType
 from app.invoicing.invoice_state import InvoiceState
 from app.invoicing.models import FiscalData, Invoice, InvoiceLine, Serial, Subject
@@ -31,10 +32,12 @@ def test_spanish_identifiers_are_well_formed() -> None:
     for _ in range(200):
         nif = spanish_nif(rng)
         assert len(nif) == 9 and nif[:8].isdigit()
-        assert nif[8] == NIF_CONTROL[int(nif[:8]) % 23]
+        assert nif[8] == spanish_ids.NIF_CONTROL[int(nif[:8]) % 23]
+        assert spanish_ids.is_valid_nif(nif)
 
         cif = spanish_cif(rng)
         assert len(cif) == 9 and cif[0].isalpha() and cif[1:8].isdigit()
+        assert spanish_ids.is_valid_cif(cif)
 
 
 def test_build_does_not_need_a_session() -> None:
