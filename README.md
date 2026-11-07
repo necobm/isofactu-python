@@ -39,7 +39,7 @@ The core of **issued invoices** works end to end (API + UI):
 - [x] **Clients** — a client directory (*Clientes*: searchable list, create / edit forms, delete
       with confirmation), independent from invoicing: an invoice gets a *copy* of the chosen
       client as its recipient (`Subject`), never a reference. See [Clients](#clients).
-- [x] **Received invoices (expenses)** — *Facturas* is split into *Emitidas* and *Recibidas*.
+- [x] **Received invoices (expenses)** — the top bar has *Ingresos* (issued) and *Gastos* (received).
       Received invoices have the same concepts, VAT, IRPF, dates, payment method and notes as
       issued ones; the supplier and its invoice number are typed in, the account's fiscal data
       is the recipient, and there are no drafts: they can always be edited. See
@@ -315,9 +315,8 @@ adds it; existing invoices start as pending.
 
 ## Received invoices (expenses)
 
-*Facturas* in the top bar opens a menu with two sections: **Emitidas** (income, invoices to
-clients: drafts and issued invoices) and **Recibidas** (expenses, invoices from suppliers: a
-single list). A received invoice is recorded with *Registrar Factura Recibida*; clicking one in
+The top bar has two invoice books: **Ingresos** (income, invoices to clients: drafts and
+issued invoices) and **Gastos** (expenses, invoices from suppliers: a single list). A received invoice is recorded with *Registrar Factura Recibida*; clicking one in
 the list opens it for editing.
 
 A received invoice has what an issued one has — concepts with VAT, invoice-level IRPF

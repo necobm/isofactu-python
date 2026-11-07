@@ -13,15 +13,8 @@ import type { Page } from '@/types'
 
 const NAV_ITEMS: NavItem<Page>[] = [
   { id: 'dashboard', label: 'Panel' },
-  {
-    id: 'facturasEmitidas',
-    label: 'Facturas',
-    children: [
-      { id: 'facturasEmitidas', label: 'Emitidas', description: 'Ingresos: las facturas a tus clientes' },
-      { id: 'facturasRecibidas', label: 'Recibidas', description: 'Gastos: las facturas de tus proveedores' },
-    ],
-  },
-  { id: 'gastos', label: 'Gastos' },
+  { id: 'facturasEmitidas', label: 'Ingresos' },
+  { id: 'facturasRecibidas', label: 'Gastos' },
   { id: 'clientes', label: 'Clientes' },
   { id: 'ajustes', label: 'Ajustes' },
 ]
@@ -30,7 +23,6 @@ const pageTitles: Record<Page, { title: string; subtitle: string }> = {
   dashboard: { title: 'Panel de Control', subtitle: 'Aquí tienes el resumen de tu actividad financiera.' },
   facturasEmitidas: { title: 'Facturas emitidas', subtitle: 'Tus ingresos: gestiona y consulta tus borradores y las facturas emitidas a tus clientes.' },
   facturasRecibidas: { title: 'Facturas recibidas', subtitle: 'Tus gastos: registra las facturas de tus proveedores y corrígelas cuando lo necesites.' },
-  gastos: { title: 'Gestión de Gastos', subtitle: 'Registra y controla tus gastos.' },
   clientes: { title: 'Directorio de Clientes', subtitle: 'Administra tu cartera de clientes.' },
   ajustes: { title: 'Ajustes de la cuenta', subtitle: 'Tus datos fiscales (el emisor de tus facturas y el receptor de las que recibes) y las series de numeración.' },
   createInvoice: { title: '', subtitle: '' },
@@ -185,11 +177,6 @@ export default function TenantApp() {
           <div className="space-y-6">
             <FiscalDataSettings onSaved={fiscalDataSaved} />
             <SerialSettings />
-          </div>
-        )}
-        {activePage === 'gastos' && (
-          <div className="flex items-center justify-center h-64 text-slate-400">
-            <p className="text-lg">Próximamente...</p>
           </div>
         )}
       </main>

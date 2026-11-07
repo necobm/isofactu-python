@@ -2,7 +2,6 @@ export type Page =
   | 'dashboard'
   | 'facturasEmitidas'
   | 'facturasRecibidas'
-  | 'gastos'
   | 'clientes'
   | 'ajustes'
   | 'createInvoice'
