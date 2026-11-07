@@ -5,6 +5,10 @@ naming strategy would have generated for the original PHP entities.
 
 Every subject and invoice belongs to one tenant (its `owner`, an ADMIN user); the
 repositories only ever see the rows of the current tenant.
+
+Issued (income) and received (expense) invoices share the `invoice` table, told apart by
+`Invoice.kind`: both have an issuer, a recipient, a number, a lifecycle and lines, only who
+fills in each party and the number differs.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from sqlalchemy.orm import Mapped, composite, mapped_column, relationship
 from app.accounts.models import User
 from app.core.database import Base
 from app.invoicing.document_type import DocumentType
+from app.invoicing.invoice_kind import InvoiceKind
 from app.invoicing.invoice_state import InvoiceState
 from app.invoicing.money import bcadd, bcdiv, bcmul, bcsub
 from app.invoicing.payment_method import PaymentMethod
@@ -35,9 +40,10 @@ from app.invoicing.value_objects import Address, IdentificationDocument, Invoice
 
 
 class Subject(Base):
-    """The recipient of an invoice: a copy of the client's data (name, NIF/CIF, address)
-    taken when the invoice was created, owned by that invoice. Clients themselves live in
-    the Clients module and are never referenced from here."""
+    """The recipient of an invoice, owned by that invoice: a copy of the client's data
+    (name, NIF/CIF, address) taken when an issued invoice was created, or of the tenant's
+    fiscal data for a received one. Clients themselves live in the Clients module and are
+    never referenced from here."""
 
     __tablename__ = "subject"
 
@@ -145,17 +151,32 @@ class Serial(Base):
 
 
 class Invoice(Base):
-    """Carries a copy of the issuer's fiscal data, links a recipient, has a date and
-    number and holds one or more lines."""
+    """Carries a copy of the issuer, links a recipient, has a date and number and holds one
+    or more lines.
+
+    Who each party is depends on the `kind`:
+
+    - ISSUED: the issuer is a snapshot of the tenant's fiscal data and the recipient a copy
+      of one of its clients; the number comes from one of the tenant's serials.
+    - RECEIVED: the issuer is the supplier, entered by hand, and the recipient a copy of the
+      tenant's fiscal data; the number (the supplier's) is entered by hand too, so these
+      invoices never take a number from -- or lock -- a serial. They have no lifecycle:
+      already issued by the supplier, they are stored as ISSUED and can always be edited.
+    """
 
     __tablename__ = "invoice"
+    __table_args__ = (
+        CheckConstraint("kind = 'ISSUED' OR serial_id IS NULL", name="serial_kind"),
+        CheckConstraint("kind = 'ISSUED' OR state = 'ISSUED'", name="received_state"),
+    )
 
     id: Mapped[int] = mapped_column(init=False, primary_key=True)
     owner_id: Mapped[int] = mapped_column(
         ForeignKey("user_account.id", ondelete="CASCADE"), init=False, index=True
     )
     owner: Mapped[User] = relationship(repr=False)
-    # Snapshot of the tenant's fiscal data at the time the invoice was (last) saved.
+    # Issued invoices: snapshot of the tenant's fiscal data at the time the invoice was
+    # (last) saved. Received invoices: the supplier, as entered by the user.
     issuer: Mapped[Issuer] = composite(
         mapped_column("issuer_name", String(255)),
         mapped_column(
@@ -171,10 +192,16 @@ class Invoice(Base):
     )
     recipient_id: Mapped[int] = mapped_column(ForeignKey("subject.id"), init=False, index=True)
     recipient: Mapped[Subject] = relationship(foreign_keys=[recipient_id], lazy="joined")
+    kind: Mapped[InvoiceKind] = mapped_column(
+        Enum(InvoiceKind, name="invoice_kind", native_enum=False, length=10),
+        default=InvoiceKind.ISSUED,
+        index=True,
+    )
 
     issue_date: Mapped[date] = mapped_column(Date, default_factory=date.today, index=True)
-    # Unassigned (`number` NULL) while the invoice is a draft. Prefix and suffix are a copy
-    # of the serial's at the time of issuing.
+    # Issued invoices: unassigned (`number` NULL) while a draft; prefix and suffix are a copy
+    # of the serial's at the time of issuing. Received invoices: the supplier's series
+    # (prefix) and number as entered.
     invoice_number: Mapped[InvoiceNumber] = composite(
         mapped_column("number_prefix", String(100)),
         mapped_column("number", String(100), nullable=True),
@@ -182,7 +209,7 @@ class Invoice(Base):
         default_factory=InvoiceNumber,
     )
     # The serial the number was (or, for a draft, will be) taken from. Serials used by an
-    # issued invoice cannot be deleted.
+    # issued invoice cannot be deleted. Always NULL on received invoices.
     serial_id: Mapped[int | None] = mapped_column(ForeignKey("serial.id"), default=None, index=True)
     state: Mapped[InvoiceState] = mapped_column(
         Enum(InvoiceState, name="invoice_state", native_enum=False, length=10),

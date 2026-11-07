@@ -18,7 +18,10 @@ from pydantic import (
 )
 
 from app.core.schemas import ApiModel
+from app.geo import service as geo
+from app.invoicing import spanish_ids
 from app.invoicing.document_type import DocumentType
+from app.invoicing.invoice_kind import InvoiceKind
 from app.invoicing.invoice_state import InvoiceState
 from app.invoicing.money import bcmul
 from app.invoicing.payment_method import PaymentMethod
@@ -112,6 +115,73 @@ class AddressSchema(ApiModel):
     country_iso_code: str = Field(default="ES", min_length=2, max_length=2, examples=["ES"])
 
 
+# -- validated parties (clients, suppliers) --------------------------------------------
+
+
+class PartyDocumentSchema(IdentificationDocumentSchema):
+    """Identification of a client or supplier. NIF (DNI / NIE) and CIF numbers are
+    normalised (upper-case, no blanks or hyphens) and their check character verified;
+    `OTHER` accepts any (foreign) identifier."""
+
+    number: str = Field(min_length=1, max_length=100, examples=["B12345674"])
+
+    @model_validator(mode="after")
+    def _check_number(self) -> "PartyDocumentSchema":
+        if self.type is DocumentType.OTHER:
+            return self
+        number = spanish_ids.normalise(self.number)
+        if self.type is DocumentType.NIF and not spanish_ids.is_valid_nif(number):
+            raise ValueError("not a valid NIF (DNI or NIE): check the digits and the letter")
+        if self.type is DocumentType.CIF and not spanish_ids.is_valid_cif(number):
+            raise ValueError(
+                "not a valid CIF: check the letter, the digits and the control character"
+            )
+        self.number = number
+        return self
+
+
+class PartyAddressSchema(AddressSchema):
+    """Postal address of a client or supplier: every part is required. The country must be
+    an ISO 3166-1 code, the postal code must match the country's format and the province
+    must be one of the country's (when the country has any)."""
+
+    street: str = Field(min_length=3, max_length=255, examples=["Calle Mayor 1"])
+    zip_code: str = Field(min_length=1, max_length=50, examples=["28001"])
+    city: str = Field(min_length=1, max_length=100, examples=["Madrid"])
+    province: str = Field(min_length=1, max_length=100, examples=["Madrid"])
+    country_iso_code: str = Field(
+        default="ES", min_length=2, max_length=2, pattern=r"^[A-Za-z]{2}$", examples=["ES"]
+    )
+
+    @field_validator("country_iso_code")
+    @classmethod
+    def _known_country(cls, value: str) -> str:
+        value = value.upper()
+        if geo.find_country(value) is None:
+            raise ValueError("unknown country code")
+        return value
+
+    @model_validator(mode="after")
+    def _check_against_country(self) -> "PartyAddressSchema":
+        if not geo.postal_code_matches(self.country_iso_code, self.zip_code):
+            raise ValueError("the postal code does not match the format of the country")
+        if geo.provinces(self.country_iso_code):
+            province = geo.find_province(self.country_iso_code, self.province)
+            if province is None:
+                raise ValueError("the province is not one of the country's provinces")
+            self.province = province.name
+        return self
+
+
+class PartyWrite(ApiModel):
+    """A counterpart of the tenant (a client, or the supplier of a received invoice):
+    name, identification and address, all of them required and checked."""
+
+    full_name: str = Field(min_length=2, max_length=255, examples=["Tech Solutions SL"])
+    document: PartyDocumentSchema
+    address: PartyAddressSchema
+
+
 # -- fiscal data / issuer -------------------------------------------------------------
 
 
@@ -155,7 +225,8 @@ class FiscalDataRead(FiscalDataWrite):
 
 
 class IssuerRead(ApiModel):
-    """The issuer as stamped on an invoice (a copy of the fiscal data at that time)."""
+    """The issuer as stored on an invoice: a copy of the fiscal data at that time (issued
+    invoices) or the supplier as entered (received invoices)."""
 
     full_name: str
     document: IdentificationDocumentSchema
@@ -166,8 +237,9 @@ class IssuerRead(ApiModel):
 
 
 class SubjectRead(ApiModel):
-    """The recipient as stored on an invoice: a copy of the client taken when the invoice
-    was created (or the draft last re-pointed at a client)."""
+    """The recipient as stored on an invoice: for an issued invoice, a copy of the client
+    taken when it was created (or the draft last re-pointed at a client); for a received
+    one, a copy of the account's fiscal data."""
 
     id: int
     full_name: str = Field(max_length=255, examples=["Tech Solutions SL"])
@@ -200,11 +272,39 @@ class InvoiceLineRead(InvoiceLineBase):
 # -- invoice --------------------------------------------------------------------------
 
 
-class InvoiceWrite(ApiModel):
-    """Fields accepted when creating or replacing an invoice. The issuer is not part of the
-    payload: it is always the fiscal data of the account."""
+class InvoiceContent(ApiModel):
+    """What issued and received invoices share: dates, payment, notes, IRPF retention and
+    lines, with the rules that apply to both."""
 
     issue_date: date = Field(default_factory=date.today, description="Cannot be in the future")
+    notes: str = Field(default="", max_length=5000)
+    due_date: date | None = Field(default=None, description="Cannot be earlier than the issue date")
+    payment_method: PaymentMethod = PaymentMethod.TRANSFER
+    retention_rate: Rate = Field(
+        default=Decimal("0.00"),
+        description="IRPF withholding on the whole invoice (% of the subtotal, deducted)",
+    )
+    lines: list[InvoiceLineCreate] = Field(min_length=1, description="At least one line")
+
+    @model_validator(mode="after")
+    def _check_consistency(self) -> "InvoiceContent":
+        """Rules shared by every invoice, draft or not (the same record ends up stored)."""
+        if self.issue_date > date.today():
+            raise ValueError("issueDate cannot be in the future")
+        if self.due_date is not None and self.due_date < self.issue_date:
+            raise ValueError("dueDate cannot be earlier than issueDate")
+        subtotal = sum(
+            (bcmul(line.quantity, line.unit_price, 2) for line in self.lines), Decimal(0)
+        )
+        if subtotal <= 0:
+            raise ValueError("the invoice must have a positive amount")
+        return self
+
+
+class InvoiceWrite(InvoiceContent):
+    """Fields accepted when creating or replacing an issued invoice. The issuer is not part
+    of the payload: it is always the fiscal data of the account."""
+
     state: InvoiceState = Field(
         default=InvoiceState.DRAFT,
         description="Lifecycle state. New invoices start as DRAFT unless stated otherwise.",
@@ -225,28 +325,6 @@ class InvoiceWrite(ApiModel):
             "draft update it replaces the recipient, and omitting it keeps the current one."
         ),
     )
-    notes: str = Field(default="", max_length=5000)
-    due_date: date | None = Field(default=None, description="Cannot be earlier than the issue date")
-    payment_method: PaymentMethod = PaymentMethod.TRANSFER
-    retention_rate: Rate = Field(
-        default=Decimal("0.00"),
-        description="IRPF withholding on the whole invoice (% of the subtotal, deducted)",
-    )
-    lines: list[InvoiceLineCreate] = Field(min_length=1, description="At least one line")
-
-    @model_validator(mode="after")
-    def _check_consistency(self) -> "InvoiceWrite":
-        """Rules shared by drafts and issued invoices (the same record ends up stored)."""
-        if self.issue_date > date.today():
-            raise ValueError("issueDate cannot be in the future")
-        if self.due_date is not None and self.due_date < self.issue_date:
-            raise ValueError("dueDate cannot be earlier than issueDate")
-        subtotal = sum(
-            (bcmul(line.quantity, line.unit_price, 2) for line in self.lines), Decimal(0)
-        )
-        if subtotal <= 0:
-            raise ValueError("the invoice must have a positive amount")
-        return self
 
 
 class InvoiceCreate(InvoiceWrite):
@@ -257,14 +335,61 @@ class InvoiceUpdate(InvoiceWrite):
     """Full replacement of a draft invoice (its lines included)."""
 
 
+class ReceivedInvoiceNumberWrite(ApiModel):
+    """The number printed on a supplier's invoice, as entered: an optional series
+    (`prefix`), the number itself and an optional `suffix`. Free text: suppliers number
+    their invoices however they like."""
+
+    prefix: str = Field(
+        default="", max_length=100, description="The supplier's series", examples=["A-2026-"]
+    )
+    number: str = Field(min_length=1, max_length=100, examples=["0042"])
+    suffix: str = Field(default="", max_length=100, examples=[""])
+
+
+class ReceivedInvoiceWrite(InvoiceContent):
+    """Fields accepted when creating or replacing a received invoice (an expense). The
+    supplier and its invoice number are entered by hand; the recipient is not part of the
+    payload: it is always the fiscal data of the account. There is no `state`: a received
+    invoice has already been issued (by its supplier) and is stored as such."""
+
+    issuer: PartyWrite = Field(description="The supplier who issued the invoice")
+    invoice_number: ReceivedInvoiceNumberWrite = Field(
+        description="The supplier's series and number, as printed on its invoice"
+    )
+
+
+class ReceivedInvoiceCreate(ReceivedInvoiceWrite):
+    pass
+
+
+class ReceivedInvoiceUpdate(ReceivedInvoiceWrite):
+    """Full replacement of a received invoice (its lines included). Received invoices can
+    always be edited."""
+
+
 class InvoiceRead(ApiModel):
     id: int
+    kind: InvoiceKind = Field(
+        description="ISSUED (income, to a client) or RECEIVED (expense, from a supplier)"
+    )
     issue_date: date
-    invoice_number: InvoiceNumberSchema | None = Field(description="`null` while a draft")
-    serial_id: int | None
-    state: InvoiceState
-    issuer: IssuerRead
-    recipient: SubjectRead
+    invoice_number: InvoiceNumberSchema | None = Field(
+        description="`null` while an issued invoice is a draft"
+    )
+    serial_id: int | None = Field(description="Always `null` on received invoices")
+    state: InvoiceState = Field(
+        description=(
+            "Issued invoices: DRAFT, then ISSUED (immutable). Received invoices: always ISSUED "
+            "(by their supplier), and editable"
+        )
+    )
+    issuer: IssuerRead = Field(
+        description="Issued: the account's fiscal data. Received: the supplier."
+    )
+    recipient: SubjectRead = Field(
+        description="Issued: a copy of the client. Received: the account's fiscal data."
+    )
     notes: str
     due_date: date | None
     payment_method: PaymentMethod

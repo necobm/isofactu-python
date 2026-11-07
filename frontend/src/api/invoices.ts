@@ -10,6 +10,7 @@ import type {
   InvoiceCollection,
   InvoiceInput,
   InvoiceState,
+  ReceivedInvoiceInput,
   Serial,
   SerialInput,
 } from './types'
@@ -44,6 +45,20 @@ export const api = {
   /** Replaces a draft invoice; issues it when `state` is ISSUED. */
   updateInvoice: (id: number, input: InvoiceInput) =>
     request<Invoice>(`/api/invoice/${id}`, { method: 'PUT', body: input }),
+
+  /** Invoices received from suppliers (expenses). */
+  listReceivedInvoices: (params: PageParams = {}, signal?: AbortSignal) =>
+    request<InvoiceCollection>('/api/received-invoice', { query: params, signal }),
+
+  getReceivedInvoice: (id: number, signal?: AbortSignal) =>
+    request<Invoice>(`/api/received-invoice/${id}`, { signal }),
+
+  createReceivedInvoice: (input: ReceivedInvoiceInput) =>
+    request<Invoice>('/api/received-invoice', { method: 'POST', body: input }),
+
+  /** Replaces a received invoice (they can always be edited). */
+  updateReceivedInvoice: (id: number, input: ReceivedInvoiceInput) =>
+    request<Invoice>(`/api/received-invoice/${id}`, { method: 'PUT', body: input }),
 
   /** The account's fiscal data (issuer of its invoices), `null` until set up. */
   getFiscalData: (signal?: AbortSignal) => request<FiscalData | null>('/api/fiscal-data', { signal }),

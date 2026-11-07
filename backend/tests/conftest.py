@@ -49,6 +49,7 @@ from app.fixtures import (  # noqa: E402
     FiscalDataFactory,
     InvoiceFactory,
     InvoiceLineFactory,
+    ReceivedInvoiceFactory,
     SerialFactory,
     SubjectFactory,
     UserFactory,
@@ -195,6 +196,11 @@ def subject_factory(factories: None) -> type[SubjectFactory]:
 @pytest.fixture
 def invoice_factory(factories: None) -> type[InvoiceFactory]:
     return InvoiceFactory
+
+
+@pytest.fixture
+def received_invoice_factory(factories: None) -> type[ReceivedInvoiceFactory]:
+    return ReceivedInvoiceFactory
 
 
 @pytest.fixture

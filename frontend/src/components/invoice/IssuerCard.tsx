@@ -1,6 +1,9 @@
 import type { Party } from '@/api'
 
-/** Compact read-only summary of who issues the invoice (the account's fiscal data). */
+/**
+ * Compact read-only summary of a party stored on an invoice — typically the account's fiscal
+ * data: the issuer of an issued invoice, the recipient of a received one.
+ */
 export default function IssuerCard({ issuer }: { issuer: Party }) {
   const { street, zipCode, city, province, countryIsoCode } = issuer.address
   const locality = [zipCode, city].filter(Boolean).join(' ')

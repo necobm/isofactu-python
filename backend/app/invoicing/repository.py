@@ -1,7 +1,8 @@
 """Data access for the Invoicing module (port of the Doctrine repositories).
 
 Every repository is bound to a tenant (`owner_id`): every query is restricted to that
-tenant's rows, so an invoice or serial of another account is simply "not found".
+tenant's rows, so an invoice or serial of another account is simply "not found". The invoice
+repository is also bound to one book (`kind`): issued and received invoices never mix.
 """
 
 from collections.abc import Sequence
@@ -9,6 +10,7 @@ from collections.abc import Sequence
 from sqlalchemy import BigInteger, cast, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.invoicing.invoice_kind import InvoiceKind
 from app.invoicing.invoice_state import InvoiceState
 from app.invoicing.models import FiscalData, Invoice, Serial, Subject
 
@@ -113,16 +115,25 @@ class SerialRepository:
 
 
 class InvoiceRepository:
-    def __init__(self, session: AsyncSession, owner_id: int) -> None:
+    """The invoices of one tenant in one book: issued ones (the default) or received ones.
+    An invoice of the other kind is "not found", exactly like another tenant's."""
+
+    def __init__(
+        self, session: AsyncSession, owner_id: int, kind: InvoiceKind = InvoiceKind.ISSUED
+    ) -> None:
         self.session = session
         self.owner_id = owner_id
+        self.kind = kind
+
+    def _scope(self):
+        return (Invoice.owner_id == self.owner_id, Invoice.kind == self.kind)
 
     async def find_all(
         self, *, state: InvoiceState | None = None, limit: int = 50, offset: int = 0
     ) -> Sequence[Invoice]:
         stmt = (
             select(Invoice)
-            .where(Invoice.owner_id == self.owner_id)
+            .where(*self._scope())
             .order_by(Invoice.issue_date.desc(), Invoice.id.desc())
             .limit(limit)
             .offset(offset)
@@ -132,13 +143,13 @@ class InvoiceRepository:
         return (await self.session.scalars(stmt)).unique().all()
 
     async def count(self, *, state: InvoiceState | None = None) -> int:
-        stmt = select(func.count()).select_from(Invoice).where(Invoice.owner_id == self.owner_id)
+        stmt = select(func.count()).select_from(Invoice).where(*self._scope())
         if state is not None:
             stmt = stmt.where(Invoice.state == state)
         return await self.session.scalar(stmt) or 0
 
     async def find(self, invoice_id: int) -> Invoice | None:
-        stmt = select(Invoice).where(Invoice.id == invoice_id, Invoice.owner_id == self.owner_id)
+        stmt = select(Invoice).where(Invoice.id == invoice_id, *self._scope())
         return (await self.session.scalars(stmt)).unique().one_or_none()
 
     async def next_number(self, serial: Serial) -> int:

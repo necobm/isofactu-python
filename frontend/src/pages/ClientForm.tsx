@@ -1,63 +1,15 @@
-import { useEffect, useMemo, useState } from 'react'
-import { api, ApiError, geo, type Client, type ClientInput, type DocumentType } from '@/api'
-import { Field, INPUT_CLASS } from '@/components/form'
-import SearchSelect from '@/components/SearchSelect'
-import { isValidCif, isValidNif, normaliseId } from '@/lib/spanishIds'
+import { useEffect, useState } from 'react'
+import { api, ApiError, type Client } from '@/api'
+import { PartyAddressFields, PartyIdentityFields } from '@/components/party/PartyFields'
+import {
+  EMPTY_PARTY,
+  partyFormFrom,
+  toPartyInput,
+  usePartyGeo,
+  validateParty,
+  type PartyFormState,
+} from '@/lib/party'
 import { useApi } from '@/lib/useApi'
-
-const DOCUMENT_TYPES: { value: DocumentType; label: string }[] = [
-  { value: 'NIF', label: 'NIF' },
-  { value: 'CIF', label: 'CIF' },
-  { value: 'OTHER', label: 'Otro' },
-]
-
-interface FormState {
-  fullName: string
-  documentType: DocumentType
-  documentNumber: string
-  street: string
-  zipCode: string
-  city: string
-  province: string
-  countryIsoCode: string
-}
-
-const EMPTY: FormState = {
-  fullName: '',
-  documentType: 'NIF',
-  documentNumber: '',
-  street: '',
-  zipCode: '',
-  city: '',
-  province: '',
-  countryIsoCode: 'ES',
-}
-
-function fromClient(client: Client): FormState {
-  return {
-    fullName: client.fullName,
-    documentType: client.document.type,
-    documentNumber: client.document.number,
-    ...client.address,
-  }
-}
-
-function toInput(form: FormState): ClientInput {
-  return {
-    fullName: form.fullName.trim(),
-    document: {
-      type: form.documentType,
-      number: form.documentType === 'OTHER' ? form.documentNumber.trim() : normaliseId(form.documentNumber),
-    },
-    address: {
-      street: form.street.trim(),
-      zipCode: form.zipCode.trim(),
-      city: form.city.trim(),
-      province: form.province.trim(),
-      countryIsoCode: form.countryIsoCode.trim().toUpperCase() || 'ES',
-    },
-  }
-}
 
 interface ClientFormProps {
   /** When given, the form edits that client instead of creating a new one. */
@@ -71,7 +23,7 @@ interface ClientFormProps {
 /** Full-page form to create or edit a client, laid out like the invoice form. */
 export default function ClientForm({ clientId, onBack, onSaved }: ClientFormProps) {
   const editing = clientId !== undefined
-  const [form, setForm] = useState<FormState>(EMPTY)
+  const [form, setForm] = useState<PartyFormState>(EMPTY_PARTY)
   const [loaded, setLoaded] = useState<Client | null>(null)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -85,75 +37,20 @@ export default function ClientForm({ clientId, onBack, onSaved }: ClientFormProp
     const client = existing.status === 'success' ? existing.data : null
     if (!client || loaded?.id === client.id) return
     setLoaded(client)
-    setForm(fromClient(client))
+    setForm(partyFormFrom(client))
   }, [existing, loaded])
 
-  function set<K extends keyof FormState>(field: K, value: FormState[K]) {
-    setForm((prev) => ({ ...prev, [field]: value }))
+  function update(patch: Partial<PartyFormState>) {
+    setForm((prev) => ({ ...prev, ...patch }))
     setError(null)
   }
 
   // -- reference data: provinces depend on the country, cities on the province -------------
-  const countries = useApi((signal) => geo.countries(signal), [])
-  const country = useMemo(
-    () => countries.data?.find((c) => c.code === form.countryIsoCode) ?? null,
-    [countries.data, form.countryIsoCode],
-  )
-  const provinces = useApi(
-    (signal) => (form.countryIsoCode ? geo.provinces(form.countryIsoCode, signal) : Promise.resolve([])),
-    [form.countryIsoCode],
-  )
-  const provinceOptions = useMemo(
-    () => (provinces.data ?? []).map((p) => ({ value: p.name, label: p.name })),
-    [provinces.data],
-  )
-  /** Countries without ISO provinces take a free-text province. */
-  const freeTextProvince =
-    form.countryIsoCode !== '' && provinces.status === 'success' && provinces.data.length === 0
-  const province = provinces.data?.find((p) => p.name === form.province) ?? null
-  const provinceCode = province?.code ?? null
-  const cities = useApi(
-    (signal) =>
-      provinceCode ? geo.cities(form.countryIsoCode, provinceCode, signal) : Promise.resolve([] as string[]),
-    [form.countryIsoCode, provinceCode],
-  )
-  const cityOptions = useMemo(() => (cities.data ?? []).map((c) => ({ value: c, label: c })), [cities.data])
-
-  function changeCountry(code: string | null) {
-    // A new country means a new set of provinces and cities
-    setForm((prev) => ({ ...prev, countryIsoCode: code ?? '', province: '', city: '' }))
-    setError(null)
-  }
-
-  function changeProvince(name: string | null) {
-    setForm((prev) => ({ ...prev, province: name ?? '', city: '' }))
-    setError(null)
-  }
-
-  function validate(input: ClientInput): string | null {
-    if (input.fullName.length < 2) return 'Indica el nombre o razón social del cliente.'
-    if (!input.document.number) return 'Indica el NIF / CIF del cliente.'
-    if (input.document.type === 'NIF' && !isValidNif(input.document.number)) {
-      return 'El NIF no es válido: comprueba los dígitos y la letra (DNI: 8 dígitos y letra; NIE: X/Y/Z, 7 dígitos y letra).'
-    }
-    if (input.document.type === 'CIF' && !isValidCif(input.document.number)) {
-      return 'El CIF no es válido: comprueba la letra, los 7 dígitos y el carácter de control.'
-    }
-    if (input.address.street.length < 3) return 'Indica la dirección del cliente.'
-    if (!input.address.zipCode) return 'Indica el código postal.'
-    if (!input.address.countryIsoCode) return 'Selecciona el país.'
-    if (country?.postalCodePattern && !new RegExp(country.postalCodePattern).test(input.address.zipCode)) {
-      return `El código postal no tiene el formato de ${country.name}.`
-    }
-    if (!input.address.province) return freeTextProvince ? 'Indica la provincia.' : 'Selecciona la provincia.'
-    if (!freeTextProvince && !province) return 'Selecciona una provincia de la lista.'
-    if (!input.address.city) return cityOptions.length ? 'Selecciona o escribe la ciudad.' : 'Indica la ciudad.'
-    return null
-  }
+  const partyGeo = usePartyGeo(form)
 
   async function save() {
-    const input = toInput(form)
-    const problem = validate(input)
+    const input = toPartyInput(form)
+    const problem = validateParty(input, partyGeo, 'del cliente')
     if (problem) {
       setError(problem)
       return
@@ -222,58 +119,13 @@ export default function ClientForm({ clientId, onBack, onSaved }: ClientFormProp
           <div className="col-span-12 lg:col-span-7 space-y-5">
             <div className="bg-white rounded-xl border border-slate-200 px-5 py-4 space-y-4">
               <h2 className="text-sm font-semibold text-slate-700">Datos del cliente</h2>
-              <Field
-                id="client-name"
-                label="Nombre o razón social"
-                type="text"
-                autoComplete="organization"
-                autoFocus={!editing}
-                maxLength={255}
-                required
-                value={form.fullName}
-                onChange={(e) => set('fullName', e.target.value)}
+              <PartyIdentityFields
+                idPrefix="client"
+                form={form}
+                onChange={update}
                 disabled={disabled}
+                autoFocus={!editing}
               />
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div>
-                  <label htmlFor="client-document-type" className="block text-xs font-medium text-slate-600 mb-1.5">
-                    Tipo de identificación
-                  </label>
-                  <select
-                    id="client-document-type"
-                    value={form.documentType}
-                    onChange={(e) => set('documentType', e.target.value as DocumentType)}
-                    disabled={disabled}
-                    className={`${INPUT_CLASS} bg-white`}
-                  >
-                    {DOCUMENT_TYPES.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="sm:col-span-2">
-                  <Field
-                    id="client-document-number"
-                    label="NIF / CIF"
-                    type="text"
-                    autoComplete="off"
-                    maxLength={100}
-                    value={form.documentNumber}
-                    onChange={(e) => set('documentNumber', e.target.value)}
-                    disabled={disabled}
-                    className="font-mono uppercase"
-                    hint={
-                      form.documentType === 'NIF'
-                        ? 'DNI (8 dígitos y letra) o NIE (X/Y/Z, 7 dígitos y letra).'
-                        : form.documentType === 'CIF'
-                          ? 'Letra, 7 dígitos y carácter de control (p. ej. B12345674).'
-                          : 'Identificador fiscal extranjero u otro documento.'
-                    }
-                  />
-                </div>
-              </div>
             </div>
           </div>
 
@@ -281,106 +133,7 @@ export default function ClientForm({ clientId, onBack, onSaved }: ClientFormProp
           <div className="col-span-12 lg:col-span-5">
             <div className="bg-white rounded-xl border border-slate-200 px-5 py-4 space-y-4">
               <h2 className="text-sm font-semibold text-slate-700">Dirección</h2>
-              <Field
-                id="client-street"
-                label="Dirección"
-                type="text"
-                autoComplete="street-address"
-                maxLength={255}
-                required
-                value={form.street}
-                onChange={(e) => set('street', e.target.value)}
-                disabled={disabled}
-              />
-              <div className="grid grid-cols-3 gap-4">
-                <Field
-                  id="client-zip"
-                  label="Código postal"
-                  type="text"
-                  autoComplete="postal-code"
-                  maxLength={50}
-                  required
-                  value={form.zipCode}
-                  onChange={(e) => set('zipCode', e.target.value)}
-                  disabled={disabled}
-                />
-                <div className="col-span-2">
-                  <SearchSelect
-                    id="client-country"
-                    label="País"
-                    options={(countries.data ?? []).map((c) => ({ value: c.code, label: c.name }))}
-                    value={form.countryIsoCode || null}
-                    onChange={changeCountry}
-                    placeholder="Buscar país…"
-                    loading={countries.status === 'loading'}
-                    disabled={disabled}
-                    required
-                    noOptionsMessage="Ningún país coincide"
-                  />
-                </div>
-              </div>
-              {freeTextProvince ? (
-                <Field
-                  id="client-province"
-                  label="Provincia"
-                  type="text"
-                  autoComplete="address-level1"
-                  maxLength={100}
-                  required
-                  value={form.province}
-                  onChange={(e) => set('province', e.target.value)}
-                  disabled={disabled}
-                  hint="Este país no tiene provincias definidas: escríbela."
-                />
-              ) : (
-                <SearchSelect
-                  id="client-province"
-                  label="Provincia"
-                  options={provinceOptions}
-                  value={form.province || null}
-                  onChange={changeProvince}
-                  placeholder={form.countryIsoCode ? 'Buscar provincia…' : 'Selecciona primero el país'}
-                  loading={provinces.status === 'loading'}
-                  disabled={disabled || !form.countryIsoCode}
-                  required
-                  noOptionsMessage="Ninguna provincia coincide"
-                />
-              )}
-              {freeTextProvince || cityOptions.length === 0 ? (
-                <Field
-                  id="client-city"
-                  label="Ciudad"
-                  type="text"
-                  autoComplete="address-level2"
-                  maxLength={100}
-                  required
-                  value={form.city}
-                  onChange={(e) => set('city', e.target.value)}
-                  disabled={disabled || !form.province}
-                  hint={
-                    !form.province
-                      ? 'Selecciona primero la provincia.'
-                      : cities.status === 'loading'
-                        ? 'Cargando ciudades…'
-                        : 'No hay lista de ciudades para esta provincia: escríbela.'
-                  }
-                />
-              ) : (
-                <SearchSelect
-                  id="client-city"
-                  label="Ciudad"
-                  options={cityOptions}
-                  value={form.city || null}
-                  onChange={(city) => set('city', city ?? '')}
-                  placeholder="Buscar ciudad…"
-                  loading={cities.status === 'loading'}
-                  disabled={disabled}
-                  required
-                  creatable
-                  noOptionsMessage="Ninguna ciudad coincide: escríbela para usarla"
-                  hint="Si no aparece en la lista, escríbela y pulsa Intro."
-                />
-              )}
+              <PartyAddressFields idPrefix="client" form={form} onChange={update} disabled={disabled} geo={partyGeo} />
             </div>
           </div>
         </form>

@@ -36,6 +36,7 @@ from app.clients.models import Client
 from app.geo import service as geo
 from app.invoicing import spanish_ids
 from app.invoicing.document_type import DocumentType
+from app.invoicing.invoice_kind import InvoiceKind
 from app.invoicing.invoice_state import InvoiceState
 from app.invoicing.models import FiscalData, Invoice, InvoiceLine, Serial, Subject
 from app.invoicing.payment_method import PaymentMethod
@@ -66,6 +67,22 @@ LINE_CONCEPTS = [
     "Gestión de redes sociales",
     "Licencia de software",
 ]
+
+# What a freelancer typically pays suppliers for (concepts of received invoices).
+EXPENSE_CONCEPTS = [
+    "Alquiler de oficina",
+    "Suministro eléctrico",
+    "Conexión a internet",
+    "Telefonía móvil",
+    "Material de oficina",
+    "Licencia de software",
+    "Asesoría fiscal y contable",
+    "Equipo informático",
+    "Hosting y dominio",
+    "Seguro de responsabilidad civil",
+]
+# How suppliers print their series (the number itself is generated).
+SUPPLIER_SERIES = ["", "A", "FV-", "2026/", "F"]
 
 _session: ContextVar[AsyncSession | Session | None] = ContextVar("fixture_session", default=None)
 
@@ -171,6 +188,17 @@ class InvoiceNumberFactory(factory.Factory):
     suffix = ""
 
 
+class SupplierNumberFactory(factory.Factory):
+    """The number printed on a supplier's invoice: any series, a zero-padded number."""
+
+    class Meta:
+        model = InvoiceNumber
+
+    prefix = fuzzy.FuzzyChoice(SUPPLIER_SERIES)
+    number = factory.LazyFunction(lambda: f"{factory.random.randgen.randrange(1, 10_000):04d}")
+    suffix = ""
+
+
 class IssuerFactory(factory.Factory):
     """The issuer snapshot of an invoice: a company with a CIF and a Spanish address."""
 
@@ -263,6 +291,16 @@ class SubjectFactory(BaseFactory):
             address=client.address,
         )
 
+    @classmethod
+    def copy_of_account(cls, data: FiscalData) -> Subject:
+        """The recipient of a received invoice: a copy of the tenant's fiscal data."""
+        return cls(
+            owner=data.owner,
+            full_name=data.company_name,
+            document=data.document,
+            address=data.address,
+        )
+
     owner = factory.SubFactory(UserFactory)
     document = factory.SubFactory(IdentificationDocumentFactory)
     address = factory.SubFactory(AddressFactory)
@@ -326,11 +364,39 @@ class InvoiceFactory(BaseFactory):
 
     @factory.post_generation
     def lines(self: Invoice, create: bool, extracted: int | list[InvoiceLine] | None, **kwargs):
-        if isinstance(extracted, list):
-            for line in extracted:
-                self.add_line(line)
-            return
-        count = extracted if isinstance(extracted, int) else fuzzy.FuzzyInteger(1, 4).fuzz()
-        strategy = InvoiceLineFactory.create if create else InvoiceLineFactory.build
-        for _ in range(count):
-            strategy(invoice=self, **kwargs)
+        _generate_lines(self, create, extracted, **kwargs)
+
+
+def _generate_lines(
+    invoice: Invoice, create: bool, extracted: int | list[InvoiceLine] | None, **kwargs
+) -> None:
+    """``lines=[...]`` attaches the given lines, ``lines=n`` generates n, nothing 1-4."""
+    if isinstance(extracted, list):
+        for line in extracted:
+            invoice.add_line(line)
+        return
+    count = extracted if isinstance(extracted, int) else fuzzy.FuzzyInteger(1, 4).fuzz()
+    strategy = InvoiceLineFactory.create if create else InvoiceLineFactory.build
+    for _ in range(count):
+        strategy(invoice=invoice, **kwargs)
+
+
+class ReceivedInvoiceFactory(InvoiceFactory):
+    """A supplier's invoice (an expense): a generated supplier as issuer, the supplier's own
+    number, no serial, and 1-4 lines with typical expense concepts. Always ISSUED: received
+    invoices have no drafts.
+
+    The recipient is a generated subject; pass ``recipient=SubjectFactory.copy_of_account(
+    fiscal_data)`` to make it the tenant, as the API does.
+    """
+
+    kind = InvoiceKind.RECEIVED
+    state = InvoiceState.ISSUED
+    invoice_number = factory.SubFactory(SupplierNumberFactory)
+    serial_id = None
+
+    @factory.post_generation
+    def lines(self: Invoice, create: bool, extracted: int | list[InvoiceLine] | None, **kwargs):
+        kwargs.setdefault("description", fuzzy.FuzzyChoice(EXPENSE_CONCEPTS))
+        kwargs.setdefault("quantity", fuzzy.FuzzyDecimal(1, 3, precision=0))  # bills, not hours
+        _generate_lines(self, create, extracted, **kwargs)

@@ -1,20 +1,57 @@
 import { useEffect, useMemo, useState } from 'react'
-import { api, type Client, type Invoice, type InvoiceInput, type InvoiceState, type Party, type PaymentMethod } from '@/api'
+import {
+  api,
+  type Client,
+  type FiscalData,
+  type Invoice,
+  type InvoiceInput,
+  type InvoiceKind,
+  type InvoiceState,
+  type Party,
+  type PaymentMethod,
+  type ReceivedInvoiceInput,
+} from '@/api'
 import ConfirmDialog from '@/components/ConfirmDialog'
 import ClientPicker from '@/components/invoice/ClientPicker'
 import ConceptsTable from '@/components/invoice/ConceptsTable'
 import IssuerCard from '@/components/invoice/IssuerCard'
 import TotalsPanel, { type TaxBreakdownEntry } from '@/components/invoice/TotalsPanel'
 import { type LineDraft } from '@/components/invoice/taxes'
+import { PartyAddressFields, PartyIdentityFields } from '@/components/party/PartyFields'
 import { invoiceAmounts, lineAmounts } from '@/lib/money'
+import { EMPTY_PARTY, partyFormFrom, toPartyInput, usePartyGeo, validateParty, type PartyFormState } from '@/lib/party'
 import { isSerialAvailableOn } from '@/lib/serials'
 import { useApi } from '@/lib/useApi'
 
 const DEFAULT_VAT_RATE = 21
 
+/** The series / number inputs of a received invoice, in the page header. */
+const HEADER_INPUT_CLASS =
+  'text-sm text-slate-700 border border-slate-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white font-medium font-mono placeholder-slate-300 placeholder:font-sans placeholder:font-normal disabled:bg-slate-50 disabled:text-slate-400'
+
 const ISSUE_CONFIRMATION =
   'Si finalizas esta factura, constará como ingreso en tu contabilidad y no podrá ser modificada ' +
   'más adelante. ¿Deseas continuar con la emisión de la factura?'
+
+/** Wording that differs between an issued invoice and a received one. */
+const TEXTS = {
+  ISSUED: {
+    newTitle: 'Nueva Factura',
+    editTitle: 'Editar Borrador',
+    fiscalDataRole: 'aparecen como emisor',
+    hintNew: 'Guarda un borrador para seguir más tarde o finaliza la factura para emitirla con número.',
+    hintEdit: 'Guarda los cambios del borrador o finaliza la factura para emitirla con número.',
+    notesPlaceholder: 'Condiciones de pago, referencias, observaciones… Aparecerán en la factura.',
+  },
+  RECEIVED: {
+    newTitle: 'Registrar Factura Recibida',
+    editTitle: 'Editar Factura Recibida',
+    fiscalDataRole: 'aparecen como receptor de las facturas que recibes',
+    hintNew: 'La factura constará como gasto en tu contabilidad. Podrás corregirla siempre que lo necesites.',
+    hintEdit: 'Puedes corregir una factura recibida siempre que lo necesites.',
+    notesPlaceholder: 'Referencias, observaciones… Solo para ti: no forman parte de la factura del proveedor.',
+  },
+} satisfies Record<InvoiceKind, Record<string, string>>
 
 let nextId = 1
 
@@ -32,8 +69,27 @@ function isoToday(): string {
   return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
 }
 
+/** The account's fiscal data as a party of the invoice (issuer or recipient). */
+function AccountCard({ account, loading }: { account: FiscalData | null; loading: boolean }) {
+  if (!account) {
+    return (
+      <p className="text-xs text-slate-400">{loading ? 'Cargando datos fiscales…' : 'Sin datos fiscales configurados.'}</p>
+    )
+  }
+  return <IssuerCard issuer={{ fullName: account.companyName, document: account.document, address: account.address }} />
+}
+
 interface InvoiceFormProps {
-  /** When given, the form edits that (draft) invoice instead of creating a new one. */
+  /**
+   * ISSUED: an invoice to a client, issued by the account (its fiscal data) with a number
+   * taken from a serial. RECEIVED: a supplier's invoice — supplier and number are typed
+   * in, and the account's fiscal data is the recipient.
+   */
+  kind: InvoiceKind
+  /**
+   * When given, the form edits that invoice instead of creating a new one: a draft (issued
+   * invoices) or any received invoice.
+   */
   invoiceId?: number
   /** Leave without saving. */
   onBack: () => void
@@ -43,14 +99,20 @@ interface InvoiceFormProps {
   onOpenSettings: () => void
 }
 
-export default function InvoiceForm({ invoiceId, onBack, onSaved, onOpenSettings }: InvoiceFormProps) {
+export default function InvoiceForm({ kind, invoiceId, onBack, onSaved, onOpenSettings }: InvoiceFormProps) {
   const editing = invoiceId !== undefined
+  const received = kind === 'RECEIVED'
+  const texts = TEXTS[kind]
 
   const [serialId, setSerialId] = useState<number | null>(null)
   // The client picked in this session; `null` while editing means "keep the recipient the
   // draft already has" (invoices hold their own copy of the client, not a reference).
   const [client, setClient] = useState<Client | null>(null)
   const [recipient, setRecipient] = useState<Party | null>(null)
+  // Received invoices: the supplier and the number printed on its invoice, as typed
+  const [supplier, setSupplier] = useState<PartyFormState>(EMPTY_PARTY)
+  const [supplierSeries, setSupplierSeries] = useState('')
+  const [supplierNumber, setSupplierNumber] = useState('')
   const [lines, setLines] = useState<LineDraft[]>([emptyLine()])
   const [notes, setNotes] = useState('')
   const [retentionRate, setRetentionRate] = useState<number | null>(null)
@@ -62,13 +124,17 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onOpenSettings
   const [error, setError] = useState<string | null>(null)
   const [loaded, setLoaded] = useState<Invoice | null>(null)
 
-  // -- the issuer is the account's fiscal data; without it nothing can be saved --------
+  // -- the account's fiscal data is the issuer of issued invoices and the recipient of
+  //    received ones; without it nothing can be saved -----------------------------------
   const fiscalData = useApi((signal) => api.getFiscalData(signal), [])
-  const issuer = fiscalData.status === 'success' ? fiscalData.data : null
+  const account = fiscalData.status === 'success' ? fiscalData.data : null
   const missingFiscalData = fiscalData.status === 'success' && fiscalData.data === null
 
-  // -- the number comes from one of the account's serials, valid on the issue date ------
-  const serials = useApi((signal) => api.listSerials(signal), [])
+  // -- received: the supplier's address selects need the geo reference data -------------
+  const supplierGeo = usePartyGeo(supplier, received)
+
+  // -- issued: the number comes from one of the account's serials, valid on the issue date
+  const serials = useApi((signal) => (received ? Promise.resolve([]) : api.listSerials(signal)), [received])
   const availableSerials = useMemo(
     () => (serials.data ?? []).filter((serial) => isSerialAvailableOn(serial, issueDate)),
     [serials.data, issueDate],
@@ -83,15 +149,27 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onOpenSettings
 
   // -- editing: load the invoice and pre-fill the form with its data ---------------------
   const existing = useApi(
-    (signal) => (invoiceId === undefined ? Promise.resolve(null) : api.getInvoice(invoiceId, signal)),
-    [invoiceId],
+    (signal) =>
+      invoiceId === undefined
+        ? Promise.resolve(null)
+        : received
+          ? api.getReceivedInvoice(invoiceId, signal)
+          : api.getInvoice(invoiceId, signal),
+    [invoiceId, received],
   )
   useEffect(() => {
     const invoice = existing.status === 'success' ? existing.data : null
     if (!invoice || loaded?.id === invoice.id) return
     setLoaded(invoice)
-    setRecipient(invoice.recipient)
-    setSerialId(invoice.serialId)
+    if (invoice.kind === 'RECEIVED') {
+      setSupplier(partyFormFrom(invoice.issuer))
+      // The number is shown as series + number; a suffix, if any, stays with the number
+      setSupplierSeries(invoice.invoiceNumber?.prefix ?? '')
+      setSupplierNumber(invoice.invoiceNumber ? invoice.invoiceNumber.number + invoice.invoiceNumber.suffix : '')
+    } else {
+      setRecipient(invoice.recipient)
+      setSerialId(invoice.serialId)
+    }
     setLines(
       invoice.lines.length > 0
         ? invoice.lines.map((line) => ({
@@ -113,7 +191,20 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onOpenSettings
   // A validation / server message only makes sense until the user edits the form again.
   useEffect(
     () => setError(null),
-    [client, recipient, lines, notes, retentionRate, paymentMethod, issueDate, dueDate, serialId],
+    [
+      client,
+      recipient,
+      supplier,
+      supplierSeries,
+      supplierNumber,
+      lines,
+      notes,
+      retentionRate,
+      paymentMethod,
+      issueDate,
+      dueDate,
+      serialId,
+    ],
   )
 
   const amounts = useMemo(
@@ -158,12 +249,18 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onOpenSettings
    */
   function validate(state: InvoiceState): string | null {
     if (missingFiscalData) return 'Configura tus datos fiscales antes de guardar la factura.'
-    if (state === 'ISSUED' && !selectedSerial) {
-      return serials.data?.length
-        ? 'Ninguna serie está disponible en la fecha de emisión. Cambia la fecha o configura las series.'
-        : 'Crea una serie de facturación en los ajustes para poder emitir facturas.'
+    if (received) {
+      const problem = validateParty(toPartyInput(supplier), supplierGeo, 'del proveedor')
+      if (problem) return problem
+      if (!supplierNumber.trim()) return 'Indica el número de la factura del proveedor.'
+    } else {
+      if (state === 'ISSUED' && !selectedSerial) {
+        return serials.data?.length
+          ? 'Ninguna serie está disponible en la fecha de emisión. Cambia la fecha o configura las series.'
+          : 'Crea una serie de facturación en los ajustes para poder emitir facturas.'
+      }
+      if (!client && !recipient) return 'Selecciona un cliente.'
     }
-    if (!client && !recipient) return 'Selecciona un cliente.'
     if (!issueDate) return 'Indica la fecha de emisión.'
     if (issueDate > isoToday()) return 'La fecha de emisión no puede ser futura.'
     if (dueDate && dueDate < issueDate) return 'La fecha de vencimiento no puede ser anterior a la de emisión.'
@@ -172,16 +269,10 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onOpenSettings
     return null
   }
 
-  function buildPayload(state: InvoiceState): InvoiceInput {
+  /** What issued and received invoices share. */
+  function buildContent() {
     return {
-      state,
       issueDate,
-      // Drafts are numberless (they just remember the serial); when issuing, the server
-      // assigns the next number of the serial.
-      serialId: selectedSerial?.id ?? null,
-      // The issuer is not sent: the server stamps the account's fiscal data.
-      // Omitted while editing if the client was not changed: the draft keeps its recipient.
-      ...(client ? { clientId: client.id } : {}),
       notes: notes.trim(),
       dueDate: dueDate || null,
       paymentMethod,
@@ -195,6 +286,29 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onOpenSettings
     }
   }
 
+  function buildPayload(state: InvoiceState): InvoiceInput {
+    return {
+      ...buildContent(),
+      state,
+      // Drafts are numberless (they just remember the serial); when issuing, the server
+      // assigns the next number of the serial.
+      serialId: selectedSerial?.id ?? null,
+      // The issuer is not sent: the server stamps the account's fiscal data.
+      // Omitted while editing if the client was not changed: the draft keeps its recipient.
+      ...(client ? { clientId: client.id } : {}),
+    }
+  }
+
+  /** Received invoices have no state: the server stores them as issued (by the supplier). */
+  function buildReceivedPayload(): ReceivedInvoiceInput {
+    return {
+      ...buildContent(),
+      issuer: toPartyInput(supplier),
+      invoiceNumber: { prefix: supplierSeries.trim(), number: supplierNumber.trim() },
+      // The recipient is not sent: the server stamps the account's fiscal data.
+    }
+  }
+
   async function save(state: InvoiceState) {
     const problem = validate(state)
     if (problem) {
@@ -205,9 +319,15 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onOpenSettings
     setError(null)
     setSaving(state)
     try {
-      const payload = buildPayload(state)
-      if (invoiceId === undefined) await api.createInvoice(payload)
-      else await api.updateInvoice(invoiceId, payload)
+      if (received) {
+        const payload = buildReceivedPayload()
+        if (invoiceId === undefined) await api.createReceivedInvoice(payload)
+        else await api.updateReceivedInvoice(invoiceId, payload)
+      } else {
+        const payload = buildPayload(state)
+        if (invoiceId === undefined) await api.createInvoice(payload)
+        else await api.updateInvoice(invoiceId, payload)
+      }
       onSaved()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
@@ -226,8 +346,9 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onOpenSettings
   }
 
   const busy = saving !== null
-  const alreadyIssued = loaded?.state === 'ISSUED'
-  const title = editing ? 'Editar Borrador' : 'Nueva Factura'
+  // Issued invoices are immutable once emitted; received ones can always be edited
+  const alreadyIssued = !received && loaded?.state === 'ISSUED'
+  const title = editing ? texts.editTitle : texts.newTitle
 
   if (editing && existing.status === 'loading' && !loaded) {
     return (
@@ -264,27 +385,59 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onOpenSettings
 
           <h1 className="text-base font-bold text-slate-800 flex-1">{title}</h1>
 
-          <label className="flex items-center gap-2 text-xs font-medium text-slate-500">
-            Serie
-            <select
-              value={selectedSerial?.id ?? ''}
-              onChange={(e) => setSerialId(e.target.value ? Number(e.target.value) : null)}
-              disabled={alreadyIssued || availableSerials.length === 0}
-              className="text-sm text-slate-700 border border-slate-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white font-medium font-mono disabled:bg-slate-50 disabled:text-slate-400"
-            >
-              {alreadyIssued && loaded?.invoiceNumber ? (
-                <option value="">{loaded.invoiceNumber.formatted}</option>
-              ) : availableSerials.length === 0 ? (
-                <option value="">{serials.status === 'loading' ? 'Cargando…' : 'Sin series disponibles'}</option>
-              ) : (
-                availableSerials.map((serial) => (
-                  <option key={serial.id} value={serial.id}>
-                    {serial.prefix}‹nº›{serial.suffix} · próx. {serial.nextNumberFormatted}
-                  </option>
-                ))
-              )}
-            </select>
-          </label>
+          {received ? (
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-2 text-xs font-medium text-slate-500">
+                Serie
+                <input
+                  type="text"
+                  value={supplierSeries}
+                  onChange={(e) => setSupplierSeries(e.target.value)}
+                  disabled={busy}
+                  maxLength={100}
+                  placeholder="Opcional"
+                  aria-label="Serie de la factura del proveedor"
+                  className={`w-28 ${HEADER_INPUT_CLASS}`}
+                />
+              </label>
+              <label className="flex items-center gap-2 text-xs font-medium text-slate-500">
+                Nº
+                <input
+                  type="text"
+                  value={supplierNumber}
+                  onChange={(e) => setSupplierNumber(e.target.value)}
+                  disabled={busy}
+                  required
+                  maxLength={100}
+                  placeholder="Nº de factura"
+                  aria-label="Número de la factura del proveedor"
+                  className={`w-36 ${HEADER_INPUT_CLASS}`}
+                />
+              </label>
+            </div>
+          ) : (
+            <label className="flex items-center gap-2 text-xs font-medium text-slate-500">
+              Serie
+              <select
+                value={selectedSerial?.id ?? ''}
+                onChange={(e) => setSerialId(e.target.value ? Number(e.target.value) : null)}
+                disabled={alreadyIssued || availableSerials.length === 0}
+                className="text-sm text-slate-700 border border-slate-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white font-medium font-mono disabled:bg-slate-50 disabled:text-slate-400"
+              >
+                {alreadyIssued && loaded?.invoiceNumber ? (
+                  <option value="">{loaded.invoiceNumber.formatted}</option>
+                ) : availableSerials.length === 0 ? (
+                  <option value="">{serials.status === 'loading' ? 'Cargando…' : 'Sin series disponibles'}</option>
+                ) : (
+                  availableSerials.map((serial) => (
+                    <option key={serial.id} value={serial.id}>
+                      {serial.prefix}‹nº›{serial.suffix} · próx. {serial.nextNumberFormatted}
+                    </option>
+                  ))
+                )}
+              </select>
+            </label>
+          )}
         </div>
       </div>
 
@@ -298,8 +451,8 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onOpenSettings
         {missingFiscalData && (
           <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
             <p>
-              Antes de crear facturas tienes que configurar los <strong>datos fiscales</strong> de tu cuenta: son los que
-              aparecen como emisor.
+              Antes de crear facturas tienes que configurar los <strong>datos fiscales</strong> de tu cuenta: son los que{' '}
+              {texts.fiscalDataRole}.
             </p>
             <button
               type="button"
@@ -310,7 +463,7 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onOpenSettings
             </button>
           </div>
         )}
-        {serials.status === 'success' && serials.data.length === 0 && !alreadyIssued && (
+        {!received && serials.status === 'success' && serials.data.length === 0 && !alreadyIssued && (
           <div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
             <p>
               No tienes ninguna <strong>serie de facturación</strong>. Puedes guardar borradores, pero para emitir una
@@ -328,40 +481,82 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onOpenSettings
         <div className="grid grid-cols-12 gap-6">
           {/* Left column */}
           <div className="col-span-8 space-y-5">
-            {/* Issuer (the account's fiscal data) */}
-            <div className="bg-white rounded-xl border border-slate-200 px-5 py-4">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-sm font-semibold text-slate-700">Emisor</h2>
-                <button
-                  type="button"
-                  onClick={onOpenSettings}
-                  className="text-xs font-medium text-indigo-600 hover:text-indigo-700"
-                >
-                  Editar datos fiscales
-                </button>
-              </div>
-              {alreadyIssued && loaded ? (
-                <IssuerCard issuer={loaded.issuer} />
-              ) : issuer ? (
-                <IssuerCard issuer={{ fullName: issuer.companyName, document: issuer.document, address: issuer.address }} />
-              ) : (
-                <p className="text-xs text-slate-400">
-                  {fiscalData.status === 'loading' ? 'Cargando datos fiscales…' : 'Sin datos fiscales configurados.'}
-                </p>
-              )}
-            </div>
+            {received ? (
+              <>
+                {/* Supplier (the issuer of a received invoice), typed in */}
+                <div className="bg-white rounded-xl border border-slate-200 px-5 py-4 space-y-4">
+                  <h2 className="text-sm font-semibold text-slate-700">Proveedor (emisor)</h2>
+                  <PartyIdentityFields
+                    idPrefix="supplier"
+                    form={supplier}
+                    onChange={(patch) => setSupplier((prev) => ({ ...prev, ...patch }))}
+                    disabled={busy}
+                    autoFocus={!editing}
+                  />
+                  <PartyAddressFields
+                    idPrefix="supplier"
+                    form={supplier}
+                    onChange={(patch) => setSupplier((prev) => ({ ...prev, ...patch }))}
+                    disabled={busy}
+                    geo={supplierGeo}
+                  />
+                </div>
 
-            {/* Client section */}
-            <div className="bg-white rounded-xl border border-slate-200 px-5 py-4">
-              <h2 className="text-sm font-semibold text-slate-700 mb-4">Cliente</h2>
-              <ClientPicker
-                value={client ?? recipient}
-                onChange={(picked) => {
-                  setClient(picked)
-                  if (!picked) setRecipient(null)
-                }}
-              />
-            </div>
+                {/* Recipient: the account's fiscal data, as it was when the invoice was recorded */}
+                <div className="bg-white rounded-xl border border-slate-200 px-5 py-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <h2 className="text-sm font-semibold text-slate-700">Receptor</h2>
+                    {!loaded && (
+                      <button
+                        type="button"
+                        onClick={onOpenSettings}
+                        className="text-xs font-medium text-indigo-600 hover:text-indigo-700"
+                      >
+                        Editar datos fiscales
+                      </button>
+                    )}
+                  </div>
+                  {loaded ? (
+                    <IssuerCard issuer={loaded.recipient} />
+                  ) : (
+                    <AccountCard account={account} loading={fiscalData.status === 'loading'} />
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
+                {/* Issuer (the account's fiscal data) */}
+                <div className="bg-white rounded-xl border border-slate-200 px-5 py-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <h2 className="text-sm font-semibold text-slate-700">Emisor</h2>
+                    <button
+                      type="button"
+                      onClick={onOpenSettings}
+                      className="text-xs font-medium text-indigo-600 hover:text-indigo-700"
+                    >
+                      Editar datos fiscales
+                    </button>
+                  </div>
+                  {alreadyIssued && loaded ? (
+                    <IssuerCard issuer={loaded.issuer} />
+                  ) : (
+                    <AccountCard account={account} loading={fiscalData.status === 'loading'} />
+                  )}
+                </div>
+
+                {/* Client section */}
+                <div className="bg-white rounded-xl border border-slate-200 px-5 py-4">
+                  <h2 className="text-sm font-semibold text-slate-700 mb-4">Cliente</h2>
+                  <ClientPicker
+                    value={client ?? recipient}
+                    onChange={(picked) => {
+                      setClient(picked)
+                      if (!picked) setRecipient(null)
+                    }}
+                  />
+                </div>
+              </>
+            )}
 
             {/* Concepts table */}
             <ConceptsTable
@@ -382,7 +577,7 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onOpenSettings
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
                 maxLength={5000}
-                placeholder="Condiciones de pago, referencias, observaciones… Aparecerán en la factura."
+                placeholder={texts.notesPlaceholder}
                 className="w-full resize-y text-sm text-slate-700 border border-slate-200 rounded-lg px-3 py-2 placeholder-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
               />
             </div>
@@ -413,10 +608,7 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onOpenSettings
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 z-10">
         <div className="max-w-screen-xl mx-auto px-6 h-16 flex items-center justify-between gap-6">
           <p role={error ? 'alert' : undefined} className={`text-xs truncate ${error ? 'text-rose-600 font-medium' : 'text-slate-400'}`}>
-            {error ??
-              (editing
-                ? 'Guarda los cambios del borrador o finaliza la factura para emitirla con número.'
-                : 'Guarda un borrador para seguir más tarde o finaliza la factura para emitirla con número.')}
+            {error ?? (editing ? texts.hintEdit : texts.hintNew)}
           </p>
           <div className="flex items-center gap-3 shrink-0">
             <button
@@ -426,20 +618,34 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onOpenSettings
             >
               Cancelar
             </button>
-            <button
-              onClick={() => save('DRAFT')}
-              disabled={busy || alreadyIssued || missingFiscalData}
-              className="text-sm font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 px-4 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {saving === 'DRAFT' ? 'Guardando…' : editing ? 'Guardar' : 'Guardar Borrador'}
-            </button>
-            <button
-              onClick={requestIssue}
-              disabled={busy || alreadyIssued || missingFiscalData}
-              className="text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {saving === 'ISSUED' ? 'Emitiendo…' : 'Finalizar Factura'}
-            </button>
+            {received ? (
+              // Received invoices are stored as issued (by the supplier) and stay editable:
+              // no draft, no confirmation
+              <button
+                onClick={() => save('ISSUED')}
+                disabled={busy || missingFiscalData}
+                className="text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {busy ? 'Guardando…' : editing ? 'Guardar Cambios' : 'Guardar Factura'}
+              </button>
+            ) : (
+              <>
+                <button
+                  onClick={() => save('DRAFT')}
+                  disabled={busy || alreadyIssued || missingFiscalData}
+                  className="text-sm font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 px-4 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {saving === 'DRAFT' ? 'Guardando…' : editing ? 'Guardar' : 'Guardar Borrador'}
+                </button>
+                <button
+                  onClick={requestIssue}
+                  disabled={busy || alreadyIssued || missingFiscalData}
+                  className="text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {saving === 'ISSUED' ? 'Emitiendo…' : 'Finalizar Factura'}
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>

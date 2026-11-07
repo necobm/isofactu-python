@@ -5,6 +5,8 @@ import { useAuth } from '@/lib/auth-context'
 export interface NavItem<Id extends string> {
   id: Id
   label: string
+  /** Sub-sections: the item opens a menu with them instead of navigating itself. */
+  children?: { id: Id; label: string; description?: string }[]
 }
 
 interface TopNavProps<Id extends string> {
@@ -19,6 +21,25 @@ export default function TopNav<Id extends string>({ items, activeId, onNavigate 
   const [changingPassword, setChangingPassword] = useState(false)
   const [leaving, setLeaving] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
+  // The nav item whose sub-section menu is open, if any
+  const [openGroup, setOpenGroup] = useState<Id | null>(null)
+  const groupRef = useRef<HTMLLIElement>(null)
+
+  useEffect(() => {
+    if (openGroup === null) return
+    const onPointerDown = (event: MouseEvent) => {
+      if (!groupRef.current?.contains(event.target as Node)) setOpenGroup(null)
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpenGroup(null)
+    }
+    document.addEventListener('mousedown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [openGroup])
 
   // Close the user menu when clicking elsewhere or pressing Escape
   useEffect(() => {
@@ -64,7 +85,57 @@ export default function TopNav<Id extends string>({ items, activeId, onNavigate 
         <nav className="flex-1 flex justify-center">
           <ul className="flex items-center gap-1">
             {items.map((item) => {
-              const isActive = activeId === item.id
+              const isActive = activeId === item.id || (item.children ?? []).some((child) => child.id === activeId)
+              if (item.children) {
+                const open = openGroup === item.id
+                const activeChild = item.children.find((child) => child.id === activeId)
+                return (
+                  <li key={item.id} ref={open ? groupRef : undefined} className="relative">
+                    <button
+                      onClick={() => setOpenGroup(open ? null : item.id)}
+                      aria-haspopup="menu"
+                      aria-expanded={open}
+                      className={`relative flex items-center gap-1 px-4 py-4 text-sm font-medium transition-colors ${
+                        isActive ? 'text-indigo-600' : 'text-slate-500 hover:text-slate-800'
+                      }`}
+                    >
+                      {item.label}
+                      {activeChild && <span className="font-normal text-indigo-400">· {activeChild.label}</span>}
+                      <svg className={`w-3.5 h-3.5 transition-transform ${open ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
+                      {isActive && (
+                        <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-600 rounded-t-full" />
+                      )}
+                    </button>
+                    {open && (
+                      <div
+                        role="menu"
+                        aria-label={item.label}
+                        className="absolute left-1/2 -translate-x-1/2 mt-1 w-64 rounded-lg border border-slate-200 bg-white shadow-lg py-1 text-sm z-20"
+                      >
+                        {item.children.map((child) => (
+                          <button
+                            key={child.id}
+                            role="menuitem"
+                            aria-current={child.id === activeId ? 'page' : undefined}
+                            onClick={() => {
+                              setOpenGroup(null)
+                              onNavigate(child.id)
+                            }}
+                            className={`w-full text-left px-4 py-2 hover:bg-slate-50 ${
+                              child.id === activeId ? 'text-indigo-600' : 'text-slate-700'
+                            }`}
+                          >
+                            <span className="block font-medium">{child.label}</span>
+                            {child.description && <span className="block text-xs text-slate-400">{child.description}</span>}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </li>
+                )
+              }
               return (
                 <li key={item.id}>
                   <button

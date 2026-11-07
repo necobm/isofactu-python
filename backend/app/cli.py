@@ -97,15 +97,20 @@ def users_create_super_admin(
 
 @fixtures_app.command("load")
 def fixtures_load(
-    invoices: Annotated[int, typer.Option(min=0, help="Number of invoices to generate")] = 20,
+    invoices: Annotated[
+        int, typer.Option(min=0, help="Number of issued invoices to generate")
+    ] = 20,
+    received: Annotated[
+        int, typer.Option(min=0, help="Number of received invoices (expenses) to generate")
+    ] = 8,
     clients: Annotated[int, typer.Option(min=1, help="Number of clients")] = 6,
     seed: Annotated[int | None, typer.Option(help="Seed for reproducible data")] = None,
     purge: Annotated[bool, typer.Option(help="Delete existing data first")] = False,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmations")] = False,
     force: Annotated[bool, typer.Option(help="Allow running with APP_ENV=prod")] = False,
 ) -> None:
-    """Populate the database with generated clients, invoices and lines, owned by the
-    demo tenant account (created, with generated fiscal data, if missing)."""
+    """Populate the database with generated clients, issued and received invoices and
+    lines, owned by the demo tenant account (created, with generated fiscal data, if missing)."""
     _guard_production(force)
     if purge and not yes:
         typer.confirm("This will DELETE all existing invoices and subjects. Continue?", abort=True)
@@ -116,6 +121,7 @@ def fixtures_load(
                 session,
                 clients=clients,
                 invoices=invoices,
+                received=received,
                 seed=seed,
                 purge=purge,
                 password_hash_rounds=get_settings().password_hash_rounds,
@@ -125,8 +131,9 @@ def fixtures_load(
 
     report = _run(run())
     typer.secho(
-        f"Database now holds {report.clients} clients, {report.invoices} invoices "
-        f"and {report.lines} lines, owned by {report.owner} (password: {DEMO_TENANT_PASSWORD}).",
+        f"Database now holds {report.clients} clients, {report.invoices} issued and "
+        f"{report.received} received invoices and {report.lines} lines, owned by "
+        f"{report.owner} (password: {DEMO_TENANT_PASSWORD}).",
         fg="green",
     )
 

@@ -5,13 +5,23 @@
 
 export type DocumentType = 'CIF' | 'NIF' | 'OTHER'
 
-/** Lifecycle state of an invoice: being prepared (DRAFT) or finalised and emitted (ISSUED). */
+/**
+ * Lifecycle state of an issued invoice: being prepared (DRAFT) or emitted with a number
+ * (ISSUED). Received invoices have no lifecycle: they are always ISSUED (by their supplier)
+ * and can always be edited.
+ */
 export type InvoiceState = 'DRAFT' | 'ISSUED'
+
+/**
+ * Which book an invoice belongs to: ISSUED (income, sent to a client) or RECEIVED
+ * (expense, from a supplier).
+ */
+export type InvoiceKind = 'ISSUED' | 'RECEIVED'
 
 export type PaymentMethod = 'TRANSFER' | 'CASH' | 'CARD' | 'DIRECT_DEBIT'
 
 export interface InvoiceNumber {
-  /** Copied from the serial when the invoice was issued. */
+  /** Issued invoices: copied from the serial when issued. Received: the supplier's series. */
   prefix: string
   number: string
   suffix: string
@@ -57,7 +67,10 @@ export interface Party {
   address: Address
 }
 
-/** The recipient as stored on an invoice: the invoice's own copy of a client. */
+/**
+ * The recipient as stored on an invoice: the invoice's own copy of a client (issued
+ * invoices) or of the account's fiscal data (received invoices).
+ */
 export interface Subject extends Party {
   id: number
 }
@@ -94,14 +107,22 @@ export interface InvoiceLine {
 
 export interface Invoice {
   id: number
+  kind: InvoiceKind
   issueDate: string // ISO date (YYYY-MM-DD)
-  /** `null` while the invoice is a draft. */
+  /**
+   * `null` while an issued invoice is a draft. Received invoices carry the supplier's
+   * number, as entered.
+   */
   invoiceNumber: InvoiceNumber | null
-  /** The serial the number was (or, for a draft, will be) taken from. */
+  /** The serial the number was (or, for a draft, will be) taken from. Always `null` on received invoices. */
   serialId: number | null
   state: InvoiceState
-  /** Copy of the account's fiscal data taken when the invoice was (last) saved. */
+  /**
+   * Issued: copy of the account's fiscal data taken when the invoice was (last) saved.
+   * Received: the supplier, as entered.
+   */
   issuer: Party
+  /** Issued: copy of the client. Received: copy of the account's fiscal data. */
   recipient: Subject
   notes: string
   dueDate: string | null // ISO date (YYYY-MM-DD)
@@ -201,10 +222,35 @@ export interface InvoiceInput {
   lines: InvoiceLineInput[]
 }
 
-export interface ClientInput {
+/** A client or supplier as sent to the server (every field required and validated). */
+export interface PartyInput {
   fullName: string
   document: IdentificationDocument
   address: Address
+}
+
+export type ClientInput = PartyInput
+
+/** The number printed on a supplier's invoice, as entered. */
+export interface ReceivedInvoiceNumberInput {
+  /** The supplier's series (optional). */
+  prefix?: string
+  number: string
+  suffix?: string
+}
+
+/** A received invoice has no state: it is stored as issued (by its supplier) and can always be edited. */
+export interface ReceivedInvoiceInput {
+  issueDate?: string
+  /** The supplier. The recipient is not sent: the server stamps the account's fiscal data. */
+  issuer: PartyInput
+  invoiceNumber: ReceivedInvoiceNumberInput
+  notes?: string
+  dueDate?: string | null
+  paymentMethod?: PaymentMethod
+  /** IRPF withholding (%) on the whole invoice. Defaults to 0. */
+  retentionRate?: number
+  lines: InvoiceLineInput[]
 }
 
 export interface SerialInput {

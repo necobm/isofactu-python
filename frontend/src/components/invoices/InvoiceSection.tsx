@@ -1,11 +1,15 @@
 import { useState } from 'react'
-import { api, type Invoice, type InvoiceState } from '@/api'
+import { api, type Invoice, type InvoiceKind, type InvoiceState } from '@/api'
 import { useApi } from '@/lib/useApi'
 import InvoiceRow, { INVOICE_TABLE_COLUMNS } from './InvoiceRow'
 
 interface InvoiceSectionProps {
-  /** Which invoices the section lists. */
-  state: InvoiceState
+  /**
+   * Which invoices the section lists: issued ones in a given `state`, or received ones
+   * (which have no state to filter by).
+   */
+  kind: InvoiceKind
+  state?: InvoiceState
   title: string
   /** Shown when the section has no invoices. */
   emptyMessage: string
@@ -19,7 +23,8 @@ interface InvoiceSectionProps {
   alwaysShowPagination?: boolean
   /**
    * What clicking a row does: without a handler it toggles the invoice details (issued
-   * invoices); with one, the invoice is handed over instead (drafts open the edit view).
+   * invoices); with one, the invoice is handed over instead (drafts and received invoices
+   * open the edit view).
    */
   onSelect?: (invoice: Invoice) => void
 }
@@ -27,6 +32,7 @@ interface InvoiceSectionProps {
 const HEADER_CELL = 'px-5 py-3 text-xs font-medium text-slate-500 uppercase tracking-wide'
 
 export default function InvoiceSection({
+  kind,
   state,
   title,
   emptyMessage,
@@ -39,8 +45,13 @@ export default function InvoiceSection({
   const [expandedId, setExpandedId] = useState<number | null>(null)
 
   const invoices = useApi(
-    (signal) => api.listInvoices({ state, limit: pageSize, offset: page * pageSize }, signal),
-    [state, page, pageSize],
+    (signal) => {
+      const params = { limit: pageSize, offset: page * pageSize }
+      return kind === 'RECEIVED'
+        ? api.listReceivedInvoices(params, signal)
+        : api.listInvoices({ ...params, state }, signal)
+    },
+    [kind, state, page, pageSize],
   )
 
   const collection = invoices.data
@@ -55,6 +66,7 @@ export default function InvoiceSection({
     <section
       className="bg-white rounded-xl border border-slate-100 shadow-sm overflow-hidden"
       aria-label={title}
+      data-invoice-kind={kind}
       data-invoice-state={state}
     >
       <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
@@ -84,7 +96,7 @@ export default function InvoiceSection({
             <tr className="bg-slate-50 border-b border-slate-100">
               <th className={`text-left ${HEADER_CELL}`}>Fecha</th>
               <th className={`text-left ${HEADER_CELL}`}>Nº Factura</th>
-              <th className={`text-left ${HEADER_CELL}`}>Cliente</th>
+              <th className={`text-left ${HEADER_CELL}`}>{kind === 'RECEIVED' ? 'Proveedor' : 'Cliente'}</th>
               <th className={`text-right ${HEADER_CELL}`}>Base</th>
               <th className={`text-right ${HEADER_CELL}`}>IVA</th>
               <th className={`text-right ${HEADER_CELL}`}>Total</th>

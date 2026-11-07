@@ -14,6 +14,8 @@ interface InvoiceRowProps {
 }
 
 export default function InvoiceRow({ invoice, expandable, expanded, onActivate }: InvoiceRowProps) {
+  // The other party: the client of an issued invoice, the supplier of a received one
+  const counterpart = invoice.kind === 'RECEIVED' ? invoice.issuer : invoice.recipient
   return (
     <>
       <tr
@@ -26,9 +28,9 @@ export default function InvoiceRow({ invoice, expandable, expanded, onActivate }
           {invoice.invoiceNumber ? invoice.invoiceNumber.formatted : <span className="italic text-slate-400">Sin número</span>}
         </td>
         <td className="px-5 py-3.5">
-          <p className="font-medium text-slate-700">{invoice.recipient.fullName}</p>
+          <p className="font-medium text-slate-700">{counterpart.fullName}</p>
           <p className="text-xs text-slate-400">
-            {invoice.recipient.document.type} {invoice.recipient.document.number}
+            {counterpart.document.type} {counterpart.document.number}
           </p>
         </td>
         <td className="px-5 py-3.5 text-right text-slate-600 whitespace-nowrap">{formatCurrency(invoice.subtotal)}</td>

@@ -8,11 +8,19 @@ import FiscalDataSettings from '@/pages/FiscalDataSettings'
 import SerialSettings from '@/pages/SerialSettings'
 import Invoices from '@/pages/Invoices'
 import InvoiceForm from '@/pages/InvoiceForm'
+import type { InvoiceKind } from '@/api'
 import type { Page } from '@/types'
 
 const NAV_ITEMS: NavItem<Page>[] = [
   { id: 'dashboard', label: 'Panel' },
-  { id: 'facturas', label: 'Facturas' },
+  {
+    id: 'facturasEmitidas',
+    label: 'Facturas',
+    children: [
+      { id: 'facturasEmitidas', label: 'Emitidas', description: 'Ingresos: las facturas a tus clientes' },
+      { id: 'facturasRecibidas', label: 'Recibidas', description: 'Gastos: las facturas de tus proveedores' },
+    ],
+  },
   { id: 'gastos', label: 'Gastos' },
   { id: 'clientes', label: 'Clientes' },
   { id: 'ajustes', label: 'Ajustes' },
@@ -20,17 +28,32 @@ const NAV_ITEMS: NavItem<Page>[] = [
 
 const pageTitles: Record<Page, { title: string; subtitle: string }> = {
   dashboard: { title: 'Panel de Control', subtitle: 'Aquí tienes el resumen de tu actividad financiera.' },
-  facturas: { title: 'Facturas', subtitle: 'Gestiona y consulta tus borradores y facturas emitidas.' },
+  facturasEmitidas: { title: 'Facturas emitidas', subtitle: 'Tus ingresos: gestiona y consulta tus borradores y las facturas emitidas a tus clientes.' },
+  facturasRecibidas: { title: 'Facturas recibidas', subtitle: 'Tus gastos: registra las facturas de tus proveedores y corrígelas cuando lo necesites.' },
   gastos: { title: 'Gestión de Gastos', subtitle: 'Registra y controla tus gastos.' },
   clientes: { title: 'Directorio de Clientes', subtitle: 'Administra tu cartera de clientes.' },
-  ajustes: { title: 'Ajustes de la cuenta', subtitle: 'Tus datos fiscales (el emisor de tus facturas) y las series de numeración.' },
+  ajustes: { title: 'Ajustes de la cuenta', subtitle: 'Tus datos fiscales (el emisor de tus facturas y el receptor de las que recibes) y las series de numeración.' },
   createInvoice: { title: '', subtitle: '' },
   editInvoice: { title: '', subtitle: '' },
+  createReceivedInvoice: { title: '', subtitle: '' },
+  editReceivedInvoice: { title: '', subtitle: '' },
   createClient: { title: '', subtitle: '' },
   editClient: { title: '', subtitle: '' },
 }
 
-/** Shell for ADMIN users (tenants): their invoices, clients and expenses. */
+/** Each invoice book: its list page and the pages of its form. */
+const INVOICE_PAGES: Record<InvoiceKind, { list: Page; create: Page; edit: Page }> = {
+  ISSUED: { list: 'facturasEmitidas', create: 'createInvoice', edit: 'editInvoice' },
+  RECEIVED: { list: 'facturasRecibidas', create: 'createReceivedInvoice', edit: 'editReceivedInvoice' },
+}
+
+function formKind(page: Page): InvoiceKind | null {
+  if (page === 'createInvoice' || page === 'editInvoice') return 'ISSUED'
+  if (page === 'createReceivedInvoice' || page === 'editReceivedInvoice') return 'RECEIVED'
+  return null
+}
+
+/** Shell for ADMIN users (tenants): their invoices (issued and received), clients and expenses. */
 export default function TenantApp() {
   const { user } = useAuth()
   const [activePage, setActivePage] = useState<Page>('dashboard')
@@ -40,14 +63,20 @@ export default function TenantApp() {
   const [afterSettings, setAfterSettings] = useState<Page | null>(null)
   const { title, subtitle } = pageTitles[activePage]
 
-  function showInvoices() {
+  function showInvoices(kind: InvoiceKind) {
     setEditingInvoiceId(null)
-    setActivePage('facturas')
+    setActivePage(INVOICE_PAGES[kind].list)
   }
 
-  function editDraft(invoiceId: number) {
+  function createInvoice(kind: InvoiceKind) {
+    setEditingInvoiceId(null)
+    setActivePage(INVOICE_PAGES[kind].create)
+  }
+
+  /** Issued invoices: drafts only. Received invoices can always be edited. */
+  function editInvoice(kind: InvoiceKind, invoiceId: number) {
     setEditingInvoiceId(invoiceId)
-    setActivePage('editInvoice')
+    setActivePage(INVOICE_PAGES[kind].edit)
   }
 
   function showClients() {
@@ -74,15 +103,17 @@ export default function TenantApp() {
     }
   }
 
-  if (activePage === 'createInvoice' || (activePage === 'editInvoice' && editingInvoiceId !== null)) {
+  const kind = formKind(activePage)
+  if (kind && (activePage === INVOICE_PAGES[kind].create || editingInvoiceId !== null)) {
     return (
       <>
-        <TopNav items={NAV_ITEMS} activeId="facturas" onNavigate={setActivePage} />
+        <TopNav items={NAV_ITEMS} activeId={INVOICE_PAGES[kind].list} onNavigate={setActivePage} />
         <InvoiceForm
-          key={editingInvoiceId ?? 'new'}
+          key={`${kind}-${editingInvoiceId ?? 'new'}`}
+          kind={kind}
           invoiceId={editingInvoiceId ?? undefined}
-          onBack={showInvoices}
-          onSaved={showInvoices}
+          onBack={() => showInvoices(kind)}
+          onSaved={() => showInvoices(kind)}
           onOpenSettings={configureFiscalData}
         />
       </>
@@ -105,6 +136,7 @@ export default function TenantApp() {
 
   const greeting = activePage === 'dashboard' && user ? `Bienvenido de nuevo, ${user.name || user.email}. ` : ''
   const onClients = activePage === 'clientes'
+  const onReceived = activePage === 'facturasRecibidas'
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
@@ -126,8 +158,7 @@ export default function TenantApp() {
                 setEditingClientId(null)
                 setActivePage('createClient')
               } else {
-                setEditingInvoiceId(null)
-                setActivePage('createInvoice')
+                createInvoice(onReceived ? 'RECEIVED' : 'ISSUED')
               }
             }}
             className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
@@ -135,15 +166,20 @@ export default function TenantApp() {
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
             </svg>
-            {onClients ? 'Nuevo Cliente' : 'Nueva Factura'}
+            {onClients ? 'Nuevo Cliente' : onReceived ? 'Registrar Factura Recibida' : 'Nueva Factura'}
           </button>
         </div>
       </div>
 
       {/* Main content */}
       <main className="flex-1 max-w-screen-xl mx-auto w-full px-6 py-6">
-        {activePage === 'dashboard' && <Dashboard onViewInvoices={() => setActivePage('facturas')} />}
-        {activePage === 'facturas' && <Invoices onEditDraft={editDraft} />}
+        {activePage === 'dashboard' && <Dashboard onViewInvoices={() => setActivePage('facturasEmitidas')} />}
+        {activePage === 'facturasEmitidas' && (
+          <Invoices key="ISSUED" kind="ISSUED" onEdit={(id) => editInvoice('ISSUED', id)} />
+        )}
+        {activePage === 'facturasRecibidas' && (
+          <Invoices key="RECEIVED" kind="RECEIVED" onEdit={(id) => editInvoice('RECEIVED', id)} />
+        )}
         {activePage === 'clientes' && <Clients onEdit={editClient} />}
         {activePage === 'ajustes' && (
           <div className="space-y-6">

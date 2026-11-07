@@ -14,6 +14,7 @@ from app.accounts.models import User
 from app.clients.models import Client
 from app.clients.repository import ClientRepository
 from app.core.database import get_session
+from app.invoicing.invoice_kind import InvoiceKind
 from app.invoicing.invoice_state import InvoiceState
 from app.invoicing.models import FiscalData, Invoice, InvoiceLine, Serial, Subject
 from app.invoicing.repository import (
@@ -26,10 +27,14 @@ from app.invoicing.schemas import (
     FiscalDataRead,
     FiscalDataWrite,
     InvoiceCollection,
+    InvoiceContent,
     InvoiceCreate,
     InvoiceRead,
     InvoiceUpdate,
     InvoiceWrite,
+    ReceivedInvoiceCreate,
+    ReceivedInvoiceUpdate,
+    ReceivedInvoiceWrite,
     SerialRead,
     SerialWrite,
 )
@@ -43,7 +48,8 @@ StateParam = Annotated[
 ]
 fiscal_data_router = APIRouter(prefix="/fiscal-data", tags=["Fiscal data"])
 serial_router = APIRouter(prefix="/serial", tags=["Serials"])
-invoice_router = APIRouter(prefix="/invoice", tags=["Invoices"])
+invoice_router = APIRouter(prefix="/invoice", tags=["Issued invoices"])
+received_invoice_router = APIRouter(prefix="/received-invoice", tags=["Received invoices"])
 
 
 # -- fiscal data ----------------------------------------------------------------------
@@ -218,31 +224,105 @@ async def delete_serial(tenant: CurrentTenant, serial_id: int, session: SessionD
     await session.commit()
 
 
-# -- invoices -------------------------------------------------------------------------
+# -- invoices: shared helpers ----------------------------------------------------------
 
 
-async def _current_issuer(session: AsyncSession, tenant: User) -> Issuer:
-    """The issuer to stamp on an invoice being saved, or a 409 until the account has its
-    fiscal data set up."""
+async def _current_fiscal_data(session: AsyncSession, tenant: User) -> FiscalData:
+    """The account's fiscal data -- the issuer of its issued invoices and the recipient of
+    its received ones -- or a 409 until it is set up."""
     data = await FiscalDataRepository(session, tenant.id).get()
     if data is None:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             "Set up the fiscal data of the account before creating invoices",
         )
-    return data.as_issuer()
+    return data
 
 
-# -- invoices -------------------------------------------------------------------------
+def _validation_error(field: str, message: str) -> HTTPException:
+    return HTTPException(
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        [{"loc": ["body", field], "msg": message, "type": "value_error"}],
+    )
+
+
+def _copy_into(
+    subject: Subject, full_name: str, document: IdentificationDocument, address: Address
+) -> Subject:
+    subject.full_name = full_name
+    subject.document = document
+    subject.address = address
+    return subject
+
+
+async def _refresh_recipient(
+    invoice: Invoice,
+    full_name: str,
+    document: IdentificationDocument,
+    address: Address,
+    session: AsyncSession,
+    tenant: User,
+) -> None:
+    """Make a draft's recipient a copy of the given party. The existing copy is reused when
+    this is the only invoice holding it; a copy shared with other invoices (legacy data) is
+    left alone and a fresh one is made."""
+    repo = SubjectRepository(session, tenant.id)
+    if await repo.reference_count(invoice.recipient) == 1:
+        _copy_into(invoice.recipient, full_name, document, address)
+    else:
+        invoice.recipient = _copy_into(Subject(owner=tenant), full_name, document, address)
+
+
+def _replace_content(invoice: Invoice, payload: InvoiceContent) -> None:
+    """Copy what every invoice has (dates, payment, notes, retention, lines) from the
+    payload; lines are replaced wholesale and orphans deleted by the cascade."""
+    invoice.issue_date = payload.issue_date
+    invoice.notes = payload.notes
+    invoice.due_date = payload.due_date
+    invoice.payment_method = payload.payment_method
+    invoice.retention_rate = payload.retention_rate
+    invoice.lines.clear()
+    for line in payload.lines:
+        invoice.add_line(InvoiceLine(**line.model_dump()))
+
+
+async def _list(
+    repo: InvoiceRepository, state: InvoiceState | None, limit: int, offset: int
+) -> InvoiceCollection:
+    items = await repo.find_all(state=state, limit=limit, offset=offset)
+    return InvoiceCollection(
+        items=[InvoiceRead.model_validate(i) for i in items],
+        total=await repo.count(state=state),
+        limit=limit,
+        offset=offset,
+    )
+
+
+async def _find_invoice(repo: InvoiceRepository, invoice_id: int) -> Invoice:
+    invoice = await repo.find(invoice_id)
+    if invoice is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Invoice not found")
+    return invoice
+
+
+async def _find_draft(repo: InvoiceRepository, invoice_id: int) -> Invoice:
+    invoice = await _find_invoice(repo, invoice_id)
+    if invoice.state is InvoiceState.ISSUED:
+        raise HTTPException(status.HTTP_409_CONFLICT, "An issued invoice can no longer be modified")
+    return invoice
+
+
+# -- issued invoices (income) ---------------------------------------------------------
 
 
 @invoice_router.get(
     "",
     response_model=InvoiceCollection,
-    summary="List invoices",
+    summary="List issued invoices",
     description=(
-        "Returns the collection of invoices stored in the database, newest first. "
-        "Optionally restricted to a single state with `?state=`."
+        "Returns the collection of invoices issued by the account, newest first. "
+        "Optionally restricted to a single state with `?state=`. Received invoices are "
+        "listed under `/api/received-invoice`."
     ),
 )
 async def list_invoices(
@@ -252,30 +332,12 @@ async def list_invoices(
     limit: LimitParam = 50,
     offset: OffsetParam = 0,
 ) -> InvoiceCollection:
-    repo = InvoiceRepository(session, tenant.id)
-    items = await repo.find_all(state=state, limit=limit, offset=offset)
-    total = await repo.count(state=state)
-    return InvoiceCollection(
-        items=[InvoiceRead.model_validate(i) for i in items],
-        total=total,
-        limit=limit,
-        offset=offset,
-    )
+    return await _list(InvoiceRepository(session, tenant.id), state, limit, offset)
 
 
-@invoice_router.get("/{invoice_id}", response_model=InvoiceRead, summary="Get an invoice")
+@invoice_router.get("/{invoice_id}", response_model=InvoiceRead, summary="Get an issued invoice")
 async def get_invoice(tenant: CurrentTenant, invoice_id: int, session: SessionDep) -> Invoice:
-    invoice = await InvoiceRepository(session, tenant.id).find(invoice_id)
-    if invoice is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Invoice not found")
-    return invoice
-
-
-def _validation_error(field: str, message: str) -> HTTPException:
-    return HTTPException(
-        status.HTTP_422_UNPROCESSABLE_CONTENT,
-        [{"loc": ["body", field], "msg": message, "type": "value_error"}],
-    )
+    return await _find_invoice(InvoiceRepository(session, tenant.id), invoice_id)
 
 
 async def _find_client(client_id: int, session: AsyncSession, tenant: User) -> Client:
@@ -287,30 +349,10 @@ async def _find_client(client_id: int, session: AsyncSession, tenant: User) -> C
     return client
 
 
-def _copy_into(subject: Subject, client: Client) -> Subject:
-    subject.full_name = client.full_name
-    subject.document = client.document
-    subject.address = client.address
-    return subject
-
-
-async def _recipient_from(client: Client, tenant: User) -> Subject:
+def _recipient_from(client: Client, tenant: User) -> Subject:
     """The invoice's own copy of the client: no reference is kept to the client, so editing
     or deleting it later never changes the invoice."""
-    return _copy_into(Subject(owner=tenant), client)
-
-
-async def _refresh_recipient(
-    invoice: Invoice, client: Client, session: AsyncSession, tenant: User
-) -> None:
-    """Point a draft at (a copy of) `client`. The existing copy is reused when this is the
-    only invoice holding it; a copy shared with other invoices (legacy data) is left alone
-    and a fresh one is made."""
-    repo = SubjectRepository(session, tenant.id)
-    if await repo.reference_count(invoice.recipient) == 1:
-        _copy_into(invoice.recipient, client)
-    else:
-        invoice.recipient = await _recipient_from(client, tenant)
+    return _copy_into(Subject(owner=tenant), client.full_name, client.document, client.address)
 
 
 async def _resolve_number(
@@ -337,7 +379,7 @@ async def _resolve_number(
     "",
     response_model=InvoiceRead,
     status_code=status.HTTP_201_CREATED,
-    summary="Create an invoice",
+    summary="Create an issued invoice",
     description=(
         "Creates a DRAFT (numberless) or an ISSUED invoice whose recipient is a copy of the "
         "client `clientId`. When issuing, the next number of the serial `serialId` is "
@@ -348,26 +390,21 @@ async def _resolve_number(
 async def create_invoice(
     tenant: CurrentTenant, payload: InvoiceCreate, session: SessionDep
 ) -> Invoice:
-    issuer = await _current_issuer(session, tenant)
+    issuer = (await _current_fiscal_data(session, tenant)).as_issuer()
     client = await _find_client(payload.client_id, session, tenant)
     repo = InvoiceRepository(session, tenant.id)
     serial, invoice_number = await _resolve_number(payload, session, tenant, repo)
 
     invoice = Invoice(
         owner=tenant,
+        kind=InvoiceKind.ISSUED,
         issuer=issuer,
-        recipient=await _recipient_from(client, tenant),
-        issue_date=payload.issue_date,
+        recipient=_recipient_from(client, tenant),
         invoice_number=invoice_number,
         serial_id=serial.id if serial else None,
         state=payload.state,
-        notes=payload.notes,
-        due_date=payload.due_date,
-        payment_method=payload.payment_method,
-        retention_rate=payload.retention_rate,
     )
-    for line in payload.lines:
-        invoice.add_line(InvoiceLine(**line.model_dump()))
+    _replace_content(invoice, payload)
 
     await repo.add(invoice)
     await session.commit()
@@ -377,7 +414,7 @@ async def create_invoice(
 @invoice_router.put(
     "/{invoice_id}",
     response_model=InvoiceRead,
-    summary="Update a draft invoice",
+    summary="Update a draft issued invoice",
     description=(
         "Replaces a DRAFT invoice (lines included). With `clientId` the recipient becomes a "
         "fresh copy of that client; without it the current recipient is kept. Sending "
@@ -389,29 +426,116 @@ async def update_invoice(
     tenant: CurrentTenant, invoice_id: int, payload: InvoiceUpdate, session: SessionDep
 ) -> Invoice:
     repo = InvoiceRepository(session, tenant.id)
-    invoice = await repo.find(invoice_id)
-    if invoice is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Invoice not found")
-    if invoice.state is InvoiceState.ISSUED:
-        raise HTTPException(status.HTTP_409_CONFLICT, "An issued invoice can no longer be modified")
+    invoice = await _find_draft(repo, invoice_id)
 
-    issuer = await _current_issuer(session, tenant)
+    issuer = (await _current_fiscal_data(session, tenant)).as_issuer()
     if payload.client_id is not None:
         client = await _find_client(payload.client_id, session, tenant)
-        await _refresh_recipient(invoice, client, session, tenant)
+        await _refresh_recipient(
+            invoice, client.full_name, client.document, client.address, session, tenant
+        )
     serial, invoice.invoice_number = await _resolve_number(payload, session, tenant, repo)
     invoice.serial_id = serial.id if serial else None
     invoice.issuer = issuer  # drafts follow the current fiscal data until issued
-    invoice.issue_date = payload.issue_date
     invoice.state = payload.state
-    invoice.notes = payload.notes
-    invoice.due_date = payload.due_date
-    invoice.payment_method = payload.payment_method
-    invoice.retention_rate = payload.retention_rate
+    _replace_content(invoice, payload)
 
-    invoice.lines.clear()  # replaced wholesale; orphans are deleted by the cascade
-    for line in payload.lines:
-        invoice.add_line(InvoiceLine(**line.model_dump()))
+    await session.commit()
+    return await repo.reload(invoice)
+
+
+# -- received invoices (expenses) -----------------------------------------------------
+# A received invoice has no lifecycle: it was issued by the supplier before the tenant
+# records it, so it is stored as ISSUED right away and can be corrected at any time.
+
+
+def _received_repo(session: AsyncSession, tenant: User) -> InvoiceRepository:
+    return InvoiceRepository(session, tenant.id, InvoiceKind.RECEIVED)
+
+
+def _supplier(payload: ReceivedInvoiceWrite) -> Issuer:
+    return Issuer.of(
+        payload.issuer.full_name,
+        IdentificationDocument(**payload.issuer.document.model_dump()),
+        Address(**payload.issuer.address.model_dump()),
+    )
+
+
+@received_invoice_router.get(
+    "",
+    response_model=InvoiceCollection,
+    summary="List received invoices",
+    description="The invoices received from suppliers (expenses), newest first.",
+)
+async def list_received_invoices(
+    tenant: CurrentTenant,
+    session: SessionDep,
+    limit: LimitParam = 50,
+    offset: OffsetParam = 0,
+) -> InvoiceCollection:
+    return await _list(_received_repo(session, tenant), None, limit, offset)
+
+
+@received_invoice_router.get(
+    "/{invoice_id}", response_model=InvoiceRead, summary="Get a received invoice"
+)
+async def get_received_invoice(
+    tenant: CurrentTenant, invoice_id: int, session: SessionDep
+) -> Invoice:
+    return await _find_invoice(_received_repo(session, tenant), invoice_id)
+
+
+@received_invoice_router.post(
+    "",
+    response_model=InvoiceRead,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a received invoice",
+    description=(
+        "Records a supplier's invoice. The supplier (`issuer`) and its number (required) are "
+        "stored as entered; the recipient is a copy of the account's fiscal data (`409` until "
+        "it is set up)."
+    ),
+)
+async def create_received_invoice(
+    tenant: CurrentTenant, payload: ReceivedInvoiceCreate, session: SessionDep
+) -> Invoice:
+    account = await _current_fiscal_data(session, tenant)
+    repo = _received_repo(session, tenant)
+    invoice = Invoice(
+        owner=tenant,
+        kind=InvoiceKind.RECEIVED,
+        state=InvoiceState.ISSUED,
+        issuer=_supplier(payload),
+        recipient=_copy_into(
+            Subject(owner=tenant), account.company_name, account.document, account.address
+        ),
+        invoice_number=InvoiceNumber(**payload.invoice_number.model_dump()),
+    )
+    _replace_content(invoice, payload)
+
+    await repo.add(invoice)
+    await session.commit()
+    return await repo.reload(invoice)
+
+
+@received_invoice_router.put(
+    "/{invoice_id}",
+    response_model=InvoiceRead,
+    summary="Update a received invoice",
+    description=(
+        "Replaces a received invoice (supplier, number and lines included). Received "
+        "invoices can always be edited. The recipient stays the copy of the fiscal data "
+        "taken when the invoice was recorded."
+    ),
+)
+async def update_received_invoice(
+    tenant: CurrentTenant, invoice_id: int, payload: ReceivedInvoiceUpdate, session: SessionDep
+) -> Invoice:
+    repo = _received_repo(session, tenant)
+    invoice = await _find_invoice(repo, invoice_id)
+    invoice.issuer = _supplier(payload)
+    invoice.invoice_number = InvoiceNumber(**payload.invoice_number.model_dump())
+    _replace_content(invoice, payload)
 
     await session.commit()
     return await repo.reload(invoice)

@@ -13,7 +13,7 @@ const navItems: { id: Page; label: string; icon: ReactNode }[] = [
     ),
   },
   {
-    id: 'facturas',
+    id: 'facturasEmitidas',
     label: 'Facturas',
     icon: (
       <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">

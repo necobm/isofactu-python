@@ -39,12 +39,17 @@ The core of **issued invoices** works end to end (API + UI):
 - [x] **Clients** — a client directory (*Clientes*: searchable list, create / edit forms, delete
       with confirmation), independent from invoicing: an invoice gets a *copy* of the chosen
       client as its recipient (`Subject`), never a reference. See [Clients](#clients).
+- [x] **Received invoices (expenses)** — *Facturas* is split into *Emitidas* and *Recibidas*.
+      Received invoices have the same concepts, VAT, IRPF, dates, payment method and notes as
+      issued ones; the supplier and its series / number are typed in, the account's fiscal data
+      is the recipient, and there are no drafts: they can always be edited. See
+      [Received invoices](#received-invoices-expenses).
 
 Partially there, with known gaps:
 
 - [ ] **Fiscal data** — cannot be overridden for a single invoice yet.
-- [ ] **Clients** — cannot be created inline from the invoice form yet; suppliers (for received
-      invoices) are not modelled.
+- [ ] **Clients** — cannot be created inline from the invoice form yet; suppliers are not
+      modelled either: the supplier of a received invoice is typed in every time.
 - [ ] **Drafts** — must already satisfy the same content rules as issued invoices (the spec allows
       incomplete drafts) and cannot be deleted.
 - [ ] **Dashboard** — the layout exists but every figure and chart is static sample data.
@@ -52,15 +57,14 @@ Partially there, with known gaps:
 ### Next: complete the MVP
 
 1. **Per-invoice issuer** — allow editing the fiscal data for a single invoice only.
-2. **Suppliers** — a supplier directory for received invoices; create a client inline from the
-   invoice form.
+2. **Suppliers** — a supplier directory to pick the issuer of received invoices from; create a
+   client inline from the invoice form.
 3. **Draft rules** — let drafts be saved incomplete, enforce required fields only when issuing,
    and allow deleting drafts.
-4. **Received invoices (expenses)** — record supplier invoices with their concepts, VAT and IRPF.
-5. **Taxes**
+4. **Taxes**
    - VAT to pay for a date range, with presets (*this month*, *current quarter*, *current year*).
    - Pending IRPF from income and IRPF already withheld/advanced, by quarter or fiscal year.
-6. **Live dashboard** — replace the sample data with real income, expenses and tax figures.
+5. **Live dashboard** — replace the sample data with real income, expenses and tax figures.
 
 ### Later: beyond the MVP
 
@@ -191,10 +195,14 @@ session (see [Accounts & authentication](#accounts--authentication)). Invoicing 
 | POST   | `/api/client`                           | ADMIN        | Create a client                                |
 | PUT    | `/api/client/{id}`                      | ADMIN        | Replace a client (invoices are not affected)   |
 | DELETE | `/api/client/{id}`                      | ADMIN        | Delete a client (invoices keep their copy)     |
-| GET    | `/api/invoice`                          | ADMIN        | Collection of invoices (`?state=&limit=&offset=`) |
-| GET    | `/api/invoice/{id}`                     | ADMIN        | Invoice detail                                 |
+| GET    | `/api/invoice`                          | ADMIN        | Collection of issued invoices (`?state=&limit=&offset=`) |
+| GET    | `/api/invoice/{id}`                     | ADMIN        | Issued invoice detail                          |
 | POST   | `/api/invoice`                          | ADMIN        | Create an invoice (draft or issued) for `clientId` with its lines (`409` until the fiscal data is set) |
 | PUT    | `/api/invoice/{id}`                     | ADMIN        | Replace a draft invoice (optionally re-pointing it at a `clientId`), or issue it |
+| GET    | `/api/received-invoice`                 | ADMIN        | Collection of received invoices (`?limit=&offset=`) |
+| GET    | `/api/received-invoice/{id}`            | ADMIN        | Received invoice detail                        |
+| POST   | `/api/received-invoice`                 | ADMIN        | Record a supplier's invoice: supplier, number (required) and lines as entered (`409` until the fiscal data is set) |
+| PUT    | `/api/received-invoice/{id}`            | ADMIN        | Replace a received invoice (always allowed)    |
 
 Example — `GET /api/invoice`:
 
@@ -203,6 +211,7 @@ Example — `GET /api/invoice`:
   "items": [
     {
       "id": 1,
+      "kind": "ISSUED",
       "issueDate": "2026-06-08",
       "invoiceNumber": { "prefix": "F-2026-", "number": "42", "suffix": "", "formatted": "F-2026-42" },
       "serialId": 1,
@@ -250,6 +259,10 @@ Conventions:
 - `PUT /api/invoice/{id}` replaces a draft in full (lines included); sending `"state": "ISSUED"`
   issues it and assigns its number. Issued invoices are immutable (`409 Conflict`).
 - `issueDate` cannot be in the future and `dueDate` cannot be earlier than it.
+- `/api/invoice` only ever sees **issued** invoices and `/api/received-invoice` only **received**
+  ones (`kind` in the payload says which): an invoice of the other kind is a `404`, like another
+  tenant's. Both share the read model and the content rules below; see
+  [Received invoices](#received-invoices-expenses) for what differs.
 - Drafts and issued invoices obey the same content rules: at least one line, a non-blank
   `description` on every line and a positive subtotal. Anything else is a `422`.
 - Line amounts: `subtotal = quantity × unitPrice`, `total = subtotal + taxAmount` (VAT). The
@@ -258,6 +271,39 @@ Conventions:
 - Monetary amounts are JSON numbers with at most two decimals (`120.98`); the backend validates and
   computes them with `Decimal`, so nothing is lost in arithmetic. Inputs also accept numeric strings.
 - Line amounts use scale 2 with **half-up rounding** (`99.99 × 21 % = 20.9979 → 21.00`).
+
+## Received invoices (expenses)
+
+*Facturas* in the top bar opens a menu with two sections: **Emitidas** (income, invoices to
+clients: drafts and issued invoices) and **Recibidas** (expenses, invoices from suppliers: a
+single list). A received invoice is recorded with *Registrar Factura Recibida*; clicking one in
+the list opens it for editing.
+
+A received invoice has what an issued one has — concepts with VAT, invoice-level IRPF
+retention, issue / due date, payment method and notes — except:
+
+| | Issued invoice (`/api/invoice`) | Received invoice (`/api/received-invoice`) |
+|---|---|---|
+| `issuer` | The account's fiscal data, stamped by the server | **The supplier, typed in** (`issuer` in the payload) |
+| `recipient` | A copy of the client `clientId` | The account's fiscal data, stamped by the server when the invoice is recorded |
+| `invoiceNumber` | Next number of the serial `serialId`, assigned when issuing | **The supplier's series (`prefix`, optional) and `number` (required), typed in** |
+| `serialId` | The serial used | Always `null`: received invoices never take a number from, or lock, a serial |
+| `state` | `DRAFT` → `ISSUED`; immutable once issued | Not in the payload; always `ISSUED` (the supplier issued it), and **always editable** |
+
+- The supplier is validated like a client: name, a NIF / CIF with a valid check character (or
+  `OTHER` for foreign identifiers) and a full address checked against the Geo module. The form
+  reuses the client form's fields.
+- The recipient is the fiscal data as it was when the invoice was recorded: later edits of the
+  invoice keep it, even if the fiscal data has changed since.
+- There is no supplier directory yet (see the roadmap): the supplier is entered on each invoice.
+- Nothing checks for duplicates: recording the same supplier invoice twice counts it twice.
+
+Both kinds live in the `invoice` table, told apart by its `kind` column (`ISSUED` | `RECEIVED`);
+check constraints keep received invoices without a serial and in the `ISSUED` state. Migration
+`0009` adds the column and marks every existing invoice as issued (its downgrade deletes the
+received invoices); `0010` turns received drafts recorded with the first version of the feature
+into plain received invoices (one without a number shows none until it is edited, which
+requires it).
 
 ## Clients
 
@@ -412,13 +458,14 @@ isofactu/
 │   │   │   ├── models.py      #   FiscalData, Serial, Subject (recipient copy), Invoice, InvoiceLine
 │   │   │   ├── value_objects.py  # InvoiceNumber, IdentificationDocument, Address, Issuer (composites)
 │   │   │   ├── document_type.py  # CIF | NIF | OTHER
+│   │   │   ├── invoice_kind.py   # ISSUED | RECEIVED (income / expense)
 │   │   │   ├── invoice_state.py  # DRAFT | ISSUED
 │   │   │   ├── payment_method.py # TRANSFER | CASH | CARD | DIRECT_DEBIT
 │   │   │   ├── money.py       #   bcmath-compatible decimal helpers
 │   │   │   ├── spanish_ids.py #   NIF / NIE / CIF validation
 │   │   │   ├── schemas.py     #   Pydantic models = API contract
 │   │   │   ├── repository.py  #   Data access, scoped to one tenant
-│   │   │   └── router.py      #   /api/fiscal-data, /api/serial, /api/invoice, /api/subject
+│   │   │   └── router.py      #   /api/fiscal-data, /api/serial, /api/invoice, /api/received-invoice
 │   │   ├── fixtures/          # factory_boy factories + loader (shared by tests and CLI)
 │   │   └── cli.py             # Management commands (`users create-super-admin`, `fixtures load`)
 │   ├── alembic/               # Migrations (`alembic revision --autogenerate -m "..."`)
@@ -429,12 +476,12 @@ isofactu/
 ├── frontend/
 │   ├── src/
 │   │   ├── App.tsx            # Auth gate + /activate/<token> route; picks the shell by role
-│   │   ├── TenantApp.tsx      # ADMIN shell: dashboard, invoices...
+│   │   ├── TenantApp.tsx      # ADMIN shell: dashboard, invoices (issued / received)...
 │   │   ├── AdminApp.tsx       # SUPER_ADMIN shell: accounts, settings
 │   │   ├── api/               # Typed API client (api, auth, admin) + contract types
 │   │   ├── pages/             # Login, ActivateAccount, Dashboard, Invoices, InvoiceForm, Clients, ClientForm, settings pages, admin/
-│   │   ├── components/        # TopNav, forms, SearchSelect (react-select), dashboard widgets, invoice form / table, admin/
-│   │   └── lib/               # AuthProvider + useAuth, tiny router, formatting, useApi hook
+│   │   ├── components/        # TopNav, forms, SearchSelect (react-select), party fields (client / supplier), dashboard widgets, invoice form / table, admin/
+│   │   └── lib/               # AuthProvider + useAuth, tiny router, formatting, useApi hook, party form helpers
 │   └── vite.config.ts         # Builds to ../public, proxies /api in dev
 └── public/                    # Built frontend assets (generated, git-ignored)
 ```
@@ -445,10 +492,10 @@ isofactu/
 - **FiscalData** — the tenant's own identity (company name, CIF/NIF, address); one per account, edited in *Ajustes*.
 - **Serial** — a numbering series of a tenant (prefix, initial number, suffix, validity period). Locked once an issued invoice uses it.
 - **Client** — an entry of the tenant's client directory (name, NIF/CIF, address). Independent from invoices.
-- **Subject** — an invoice's own copy of its recipient, taken from a client when the invoice is created.
-- **Invoice** — carries a copy of the issuer's fiscal data (**Issuer** value object), links a recipient, has a date, an invoice number, a state (`DRAFT` → `ISSUED`) and an optional IRPF retention rate, and contains one or more lines.
+- **Subject** — an invoice's own copy of its recipient: taken from a client when an issued invoice is created, or from the fiscal data for a received one.
+- **Invoice** — of a `kind`: `ISSUED` (income) or `RECEIVED` (expense). Carries a copy of its issuer (**Issuer** value object: the fiscal data, or the supplier as typed in), links a recipient, has a date, an invoice number, a state (`DRAFT` → `ISSUED` for issued invoices; received ones are always `ISSUED` and stay editable) and an optional IRPF retention rate, and contains one or more lines.
 - **InvoiceLine** — a concept with description, quantity, unit price and VAT rate. Amounts are computed with fixed-point decimals.
-- **InvoiceNumber** — value object: prefix + sequential number + suffix (`F-2026-42`), copied from the serial at issue time; unassigned while the invoice is a draft.
+- **InvoiceNumber** — value object: prefix + sequential number + suffix (`F-2026-42`), copied from the serial at issue time; unassigned while the invoice is a draft. On a received invoice, the supplier's series and number as typed in.
 
 ## Fixtures
 
@@ -463,8 +510,8 @@ serial — so that you can log in and browse the data. Issued invoices are numbe
 from that serial in issue-date order:
 
 ```bash
-make fixtures                                   # purge + 6 clients, 20 invoices, seed 42
-make fixtures ARGS="--invoices 50 --clients 10" # same, with options
+make fixtures                                   # purge + 6 clients, 20 issued + 8 received invoices, seed 42
+make fixtures ARGS="--invoices 50 --received 20 --clients 10" # same, with options
 make fixtures-purge                             # remove invoices, clients and serials (accounts and fiscal data are kept)
 
 # the underlying commands
@@ -495,7 +542,7 @@ def test_pure():                          # no database needed
 
 | Fixture                                                      | Provides                                   |
 |--------------------------------------------------------------|--------------------------------------------|
-| `client_factory`, `subject_factory`, `invoice_factory`, `invoice_line_factory`, `user_factory` | Factory classes bound to the test session |
+| `client_factory`, `subject_factory`, `invoice_factory`, `received_invoice_factory`, `invoice_line_factory`, `user_factory` | Factory classes bound to the test session |
 | `tenant`, `other_tenant`, `super_admin`                      | Persisted, active accounts (password `PASSWORD`) |
 | `fiscal_data`                                                | The fiscal data of `tenant` (needed to save invoices through the API) |
 | `serial`                                                     | A `F-2026-` serial of `tenant` (needed to issue invoices) |
@@ -506,6 +553,8 @@ def test_pure():                          # no database needed
 
 `InvoiceFactory()` gives the invoice and its generated recipient the same (generated) owner and a
 generated issuer snapshot; pass `owner=tenant` / `issuer=fiscal_data.as_issuer()` to pin them.
+`ReceivedInvoiceFactory()` makes a received one (generated supplier, supplier's number, no serial);
+pass `recipient=SubjectFactory.copy_of_account(fiscal_data)` to address it to a tenant.
 The bcrypt work factor is lowered to 4 rounds in the test-suite.
 
 Factories only `session.add()` — they never flush or commit on their own, so they behave the same

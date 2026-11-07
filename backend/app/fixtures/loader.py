@@ -15,12 +15,14 @@ from app.fixtures.factories import (
     ClientFactory,
     FiscalDataFactory,
     InvoiceFactory,
+    ReceivedInvoiceFactory,
     SerialFactory,
     SubjectFactory,
     UserFactory,
     bind_session,
     reseed,
 )
+from app.invoicing.invoice_kind import InvoiceKind
 from app.invoicing.invoice_state import InvoiceState
 from app.invoicing.models import FiscalData, Invoice, InvoiceLine, Serial, Subject
 from app.invoicing.repository import FiscalDataRepository, InvoiceRepository, SerialRepository
@@ -34,8 +36,9 @@ DEMO_TENANT_NAME = "Cuenta de demostración"
 @dataclass(frozen=True, slots=True)
 class LoadReport:
     clients: int
-    invoices: int
-    lines: int
+    invoices: int  # issued ones
+    received: int
+    lines: int  # of both kinds
     owner: str
 
 
@@ -86,14 +89,17 @@ async def load_fixtures(
     owner: User | None = None,
     clients: int = 6,
     invoices: int = 20,
+    received: int = 8,
     seed: int | None = None,
     purge: bool = False,
     password_hash_rounds: int = 12,
 ) -> LoadReport:
     """Generate `clients` clients and `invoices` invoices issued to them (each with its own
-    copy of the client as recipient, as the API does), all owned by `owner` (the demo
-    tenant when omitted), whose fiscal data and a serial are generated too if missing.
-    Issued invoices are numbered correlatively from that serial, in issue-date order.
+    copy of the client as recipient, as the API does), plus `received` invoices from
+    generated suppliers (each with its own copy of the fiscal data as recipient), all owned
+    by `owner` (the demo tenant when omitted), whose fiscal data and a serial are generated
+    too if missing. Issued invoices are numbered correlatively from that serial, in
+    issue-date order; received ones carry the supplier's number.
 
     The caller owns the transaction: nothing is committed here.
     """
@@ -103,7 +109,8 @@ async def load_fixtures(
         await purge_fixtures(session)
     if owner is None:
         owner = await ensure_demo_tenant(session, password_hash_rounds=password_hash_rounds)
-    issuer = (await ensure_fiscal_data(session, owner)).as_issuer()
+    fiscal_data = await ensure_fiscal_data(session, owner)
+    issuer = fiscal_data.as_issuer()
     serial = await ensure_serial(session, owner)
     next_number = await InvoiceRepository(session, owner.id).next_number(serial)
 
@@ -122,12 +129,20 @@ async def load_fixtures(
             if invoice.state is InvoiceState.ISSUED:
                 invoice.invoice_number = serial.number(next_number)
                 next_number += 1
+        for _ in range(received):
+            ReceivedInvoiceFactory(
+                owner=owner, recipient=SubjectFactory.copy_of_account(fiscal_data)
+            )
         await session.flush()
+
+    def count_of(kind: InvoiceKind):
+        return select(func.count()).select_from(Invoice).where(Invoice.kind == kind)
 
     count = func.count()
     return LoadReport(
         clients=await session.scalar(select(count).select_from(Client)) or 0,
-        invoices=await session.scalar(select(count).select_from(Invoice)) or 0,
+        invoices=await session.scalar(count_of(InvoiceKind.ISSUED)) or 0,
+        received=await session.scalar(count_of(InvoiceKind.RECEIVED)) or 0,
         lines=await session.scalar(select(count).select_from(InvoiceLine)) or 0,
         owner=owner.email,
     )
