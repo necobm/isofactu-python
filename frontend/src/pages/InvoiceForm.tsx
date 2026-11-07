@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   api,
+  ApiError,
   type Client,
   type FiscalData,
   type Invoice,
@@ -9,12 +10,15 @@ import {
   type InvoiceState,
   type Party,
   type PaymentMethod,
+  type ReceivedInvoiceDraft,
   type ReceivedInvoiceInput,
 } from '@/api'
 import ConfirmDialog from '@/components/ConfirmDialog'
+import { Field } from '@/components/form'
 import ClientPicker from '@/components/invoice/ClientPicker'
 import ConceptsTable from '@/components/invoice/ConceptsTable'
 import IssuerCard from '@/components/invoice/IssuerCard'
+import PdfImportPanel, { type PdfImportResult } from '@/components/invoice/PdfImportPanel'
 import TotalsPanel, { type TaxBreakdownEntry } from '@/components/invoice/TotalsPanel'
 import { type LineDraft } from '@/components/invoice/taxes'
 import { PartyAddressFields, PartyIdentityFields } from '@/components/party/PartyFields'
@@ -24,10 +28,6 @@ import { isSerialAvailableOn } from '@/lib/serials'
 import { useApi } from '@/lib/useApi'
 
 const DEFAULT_VAT_RATE = 21
-
-/** The series / number inputs of a received invoice, in the page header. */
-const HEADER_INPUT_CLASS =
-  'text-sm text-slate-700 border border-slate-200 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white font-medium font-mono placeholder-slate-300 placeholder:font-sans placeholder:font-normal disabled:bg-slate-50 disabled:text-slate-400'
 
 const ISSUE_CONFIRMATION =
   'Si finalizas esta factura, constará como ingreso en tu contabilidad y no podrá ser modificada ' +
@@ -67,6 +67,29 @@ function toNumber(value: string | number): number {
 function isoToday(): string {
   const now = new Date()
   return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10)
+}
+
+/** What to tell the user when a PDF could not be imported. */
+function importErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    switch (error.status) {
+      case 503:
+        return 'La importación desde PDF no está disponible: el servidor no tiene configurado el servicio de lectura de facturas.'
+      case 413:
+        return 'El PDF es demasiado grande para importarlo.'
+      case 422: {
+        // The server says what is wrong with the file in the `type` of the error
+        const kind = Array.isArray(error.detail) ? (error.detail[0] as { type?: string } | undefined)?.type : undefined
+        if (kind === 'not_invoice') return 'El PDF no parece una factura. Comprueba el archivo o introduce los datos a mano.'
+        if (kind === 'no_text')
+          return 'El PDF no contiene texto (¿es un escaneo?) y el modelo configurado no puede leer imágenes. Introduce los datos a mano.'
+        return 'El archivo no es un PDF válido.'
+      }
+      case 502:
+        return 'No se han podido leer los datos del PDF. Inténtalo de nuevo o introdúcelos a mano.'
+    }
+  }
+  return `No se ha podido importar el PDF: ${error instanceof Error ? error.message : String(error)}`
 }
 
 /** The account's fiscal data as a party of the invoice (issuer or recipient). */
@@ -109,9 +132,8 @@ export default function InvoiceForm({ kind, invoiceId, onBack, onSaved, onOpenSe
   // draft already has" (invoices hold their own copy of the client, not a reference).
   const [client, setClient] = useState<Client | null>(null)
   const [recipient, setRecipient] = useState<Party | null>(null)
-  // Received invoices: the supplier and the number printed on its invoice, as typed
+  // Received invoices: the supplier and the number printed on its invoice (whole), as typed
   const [supplier, setSupplier] = useState<PartyFormState>(EMPTY_PARTY)
-  const [supplierSeries, setSupplierSeries] = useState('')
   const [supplierNumber, setSupplierNumber] = useState('')
   const [lines, setLines] = useState<LineDraft[]>([emptyLine()])
   const [notes, setNotes] = useState('')
@@ -123,6 +145,12 @@ export default function InvoiceForm({ kind, invoiceId, onBack, onSaved, onOpenSe
   const [confirmingIssue, setConfirmingIssue] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loaded, setLoaded] = useState<Invoice | null>(null)
+  // Received invoices: reading a PDF to fill in the form
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState<PdfImportResult | null>(null)
+  const [importError, setImportError] = useState<string | null>(null)
+  const importRequest = useRef<AbortController | null>(null)
+  useEffect(() => () => importRequest.current?.abort(), []) // leaving the form cancels it
 
   // -- the account's fiscal data is the issuer of issued invoices and the recipient of
   //    received ones; without it nothing can be saved -----------------------------------
@@ -163,9 +191,7 @@ export default function InvoiceForm({ kind, invoiceId, onBack, onSaved, onOpenSe
     setLoaded(invoice)
     if (invoice.kind === 'RECEIVED') {
       setSupplier(partyFormFrom(invoice.issuer))
-      // The number is shown as series + number; a suffix, if any, stays with the number
-      setSupplierSeries(invoice.invoiceNumber?.prefix ?? '')
-      setSupplierNumber(invoice.invoiceNumber ? invoice.invoiceNumber.number + invoice.invoiceNumber.suffix : '')
+      setSupplierNumber(invoice.invoiceNumber?.formatted ?? '')
     } else {
       setRecipient(invoice.recipient)
       setSerialId(invoice.serialId)
@@ -195,7 +221,6 @@ export default function InvoiceForm({ kind, invoiceId, onBack, onSaved, onOpenSe
       client,
       recipient,
       supplier,
-      supplierSeries,
       supplierNumber,
       lines,
       notes,
@@ -304,7 +329,7 @@ export default function InvoiceForm({ kind, invoiceId, onBack, onSaved, onOpenSe
     return {
       ...buildContent(),
       issuer: toPartyInput(supplier),
-      invoiceNumber: { prefix: supplierSeries.trim(), number: supplierNumber.trim() },
+      invoiceNumber: { number: supplierNumber.trim() },
       // The recipient is not sent: the server stamps the account's fiscal data.
     }
   }
@@ -345,7 +370,49 @@ export default function InvoiceForm({ kind, invoiceId, onBack, onSaved, onOpenSe
     setConfirmingIssue(true)
   }
 
+  /** Fill in the form with what was read from the PDF (what could not be read is kept). */
+  function applyDraft(draft: ReceivedInvoiceDraft) {
+    if (draft.issuer.fullName || draft.issuer.document.number) {
+      const party = partyFormFrom(draft.issuer)
+      setSupplier({ ...party, countryIsoCode: party.countryIsoCode || 'ES' })
+    }
+    if (draft.invoiceNumber) setSupplierNumber(draft.invoiceNumber.number)
+    if (draft.issueDate) setIssueDate(draft.issueDate)
+    if (draft.dueDate) setDueDate(draft.dueDate)
+    if (draft.paymentMethod) setPaymentMethod(draft.paymentMethod)
+    setRetentionRate(draft.retentionRate > 0 ? draft.retentionRate : null)
+    if (draft.lines.length > 0) setLines(draft.lines.map((line) => ({ id: nextId++, ...line })))
+  }
+
+  async function importPdf(file: File) {
+    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+      setImportError('Elige un archivo PDF.')
+      return
+    }
+    const request = new AbortController()
+    importRequest.current = request
+    setImporting(true)
+    setImportError(null)
+    setImportResult(null)
+    try {
+      const draft = await api.extractReceivedInvoice(file, request.signal)
+      applyDraft(draft)
+      setImportResult({
+        fileName: file.name,
+        addressedToAccount: draft.addressedToAccount,
+        customerName: draft.customerName,
+        printedTotal: draft.printedTotal,
+      })
+    } catch (err) {
+      if (!request.signal.aborted) setImportError(importErrorMessage(err))
+    } finally {
+      if (!request.signal.aborted) setImporting(false)
+    }
+  }
+
   const busy = saving !== null
+  // Fields cannot be edited while saving or while a PDF is being read into them
+  const locked = busy || importing
   // Issued invoices are immutable once emitted; received ones can always be edited
   const alreadyIssued = !received && loaded?.state === 'ISSUED'
   const title = editing ? texts.editTitle : texts.newTitle
@@ -385,37 +452,7 @@ export default function InvoiceForm({ kind, invoiceId, onBack, onSaved, onOpenSe
 
           <h1 className="text-base font-bold text-slate-800 flex-1">{title}</h1>
 
-          {received ? (
-            <div className="flex items-center gap-3">
-              <label className="flex items-center gap-2 text-xs font-medium text-slate-500">
-                Serie
-                <input
-                  type="text"
-                  value={supplierSeries}
-                  onChange={(e) => setSupplierSeries(e.target.value)}
-                  disabled={busy}
-                  maxLength={100}
-                  placeholder="Opcional"
-                  aria-label="Serie de la factura del proveedor"
-                  className={`w-28 ${HEADER_INPUT_CLASS}`}
-                />
-              </label>
-              <label className="flex items-center gap-2 text-xs font-medium text-slate-500">
-                Nº
-                <input
-                  type="text"
-                  value={supplierNumber}
-                  onChange={(e) => setSupplierNumber(e.target.value)}
-                  disabled={busy}
-                  required
-                  maxLength={100}
-                  placeholder="Nº de factura"
-                  aria-label="Número de la factura del proveedor"
-                  className={`w-36 ${HEADER_INPUT_CLASS}`}
-                />
-              </label>
-            </div>
-          ) : (
+          {!received && (
             <label className="flex items-center gap-2 text-xs font-medium text-slate-500">
               Serie
               <select
@@ -478,11 +515,34 @@ export default function InvoiceForm({ kind, invoiceId, onBack, onSaved, onOpenSe
             </button>
           </div>
         )}
-        <div className="grid grid-cols-12 gap-6">
+        {/* While a PDF is read, every field is blocked (a disabled fieldset disables them all) */}
+        <fieldset disabled={importing} className="grid grid-cols-12 gap-6 min-w-0">
           {/* Left column */}
-          <div className="col-span-8 space-y-5">
+          <div
+            className={`col-span-8 space-y-5 transition-opacity ${importing ? 'opacity-50 pointer-events-none' : ''}`}
+            aria-busy={importing}
+          >
             {received ? (
               <>
+                {/* The supplier's invoice number: whole, as printed */}
+                <div className="bg-white rounded-xl border border-slate-200 px-5 py-4 space-y-3">
+                  <h2 className="text-sm font-semibold text-slate-700">Factura del proveedor</h2>
+                  <Field
+                    id="received-number"
+                    label="Número de factura"
+                    type="text"
+                    required
+                    maxLength={100}
+                    value={supplierNumber}
+                    onChange={(e) => setSupplierNumber(e.target.value)}
+                    disabled={locked}
+                    autoFocus={!editing}
+                    autoComplete="off"
+                    className="font-mono"
+                    hint="Completo, tal como aparece en la factura (p. ej. FV-2026/0042)."
+                  />
+                </div>
+
                 {/* Supplier (the issuer of a received invoice), typed in */}
                 <div className="bg-white rounded-xl border border-slate-200 px-5 py-4 space-y-4">
                   <h2 className="text-sm font-semibold text-slate-700">Proveedor (emisor)</h2>
@@ -490,14 +550,13 @@ export default function InvoiceForm({ kind, invoiceId, onBack, onSaved, onOpenSe
                     idPrefix="supplier"
                     form={supplier}
                     onChange={(patch) => setSupplier((prev) => ({ ...prev, ...patch }))}
-                    disabled={busy}
-                    autoFocus={!editing}
+                    disabled={locked}
                   />
                   <PartyAddressFields
                     idPrefix="supplier"
                     form={supplier}
                     onChange={(patch) => setSupplier((prev) => ({ ...prev, ...patch }))}
-                    disabled={busy}
+                    disabled={locked}
                     geo={supplierGeo}
                   />
                 </div>
@@ -585,7 +644,20 @@ export default function InvoiceForm({ kind, invoiceId, onBack, onSaved, onOpenSe
 
           {/* Right column */}
           <div className="col-span-4">
+            {received && !editing && (
+              <div className="mb-4">
+                <PdfImportPanel
+                  importing={importing}
+                  disabled={busy}
+                  onImport={importPdf}
+                  result={importResult}
+                  error={importError}
+                  computedTotal={totals.total}
+                />
+              </div>
+            )}
             <TotalsPanel
+              dimmed={importing}
               subtotal={totals.subtotal}
               taxBreakdown={taxBreakdown}
               retentionRate={retentionRate}
@@ -601,14 +673,14 @@ export default function InvoiceForm({ kind, invoiceId, onBack, onSaved, onOpenSe
               onDueDateChange={setDueDate}
             />
           </div>
-        </div>
+        </fieldset>
       </main>
 
       {/* Sticky footer */}
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 z-10">
         <div className="max-w-screen-xl mx-auto px-6 h-16 flex items-center justify-between gap-6">
           <p role={error ? 'alert' : undefined} className={`text-xs truncate ${error ? 'text-rose-600 font-medium' : 'text-slate-400'}`}>
-            {error ?? (editing ? texts.hintEdit : texts.hintNew)}
+            {error ?? (importing ? 'Leyendo la factura del PDF…' : editing ? texts.hintEdit : texts.hintNew)}
           </p>
           <div className="flex items-center gap-3 shrink-0">
             <button
@@ -623,7 +695,7 @@ export default function InvoiceForm({ kind, invoiceId, onBack, onSaved, onOpenSe
               // no draft, no confirmation
               <button
                 onClick={() => save('ISSUED')}
-                disabled={busy || missingFiscalData}
+                disabled={locked || missingFiscalData}
                 className="text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {busy ? 'Guardando…' : editing ? 'Guardar Cambios' : 'Guardar Factura'}

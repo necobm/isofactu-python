@@ -81,7 +81,7 @@ EXPENSE_CONCEPTS = [
     "Hosting y dominio",
     "Seguro de responsabilidad civil",
 ]
-# How suppliers print their series (the number itself is generated).
+# How suppliers start their invoice numbers (the rest is generated).
 SUPPLIER_SERIES = ["", "A", "FV-", "2026/", "F"]
 
 _session: ContextVar[AsyncSession | Session | None] = ContextVar("fixture_session", default=None)
@@ -189,13 +189,18 @@ class InvoiceNumberFactory(factory.Factory):
 
 
 class SupplierNumberFactory(factory.Factory):
-    """The number printed on a supplier's invoice: any series, a zero-padded number."""
+    """The number printed on a supplier's invoice: whole, in any style ("FV-0042", "2026/0042")."""
 
     class Meta:
         model = InvoiceNumber
 
-    prefix = fuzzy.FuzzyChoice(SUPPLIER_SERIES)
-    number = factory.LazyFunction(lambda: f"{factory.random.randgen.randrange(1, 10_000):04d}")
+    prefix = ""
+    number = factory.LazyFunction(
+        lambda: (
+            f"{factory.random.randgen.choice(SUPPLIER_SERIES)}"
+            f"{factory.random.randgen.randrange(1, 10_000):04d}"
+        )
+    )
     suffix = ""
 
 

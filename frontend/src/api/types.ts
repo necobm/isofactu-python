@@ -231,12 +231,30 @@ export interface PartyInput {
 
 export type ClientInput = PartyInput
 
-/** The number printed on a supplier's invoice, as entered. */
+/** The number printed on a supplier's invoice: whole, as printed (series included). */
 export interface ReceivedInvoiceNumberInput {
-  /** The supplier's series (optional). */
-  prefix?: string
   number: string
-  suffix?: string
+}
+
+/**
+ * What could be read from the PDF of a received invoice, to pre-fill the form. Nothing is
+ * stored; whatever could not be read is empty / `null`.
+ */
+export interface ReceivedInvoiceDraft {
+  /** The supplier. */
+  issuer: Party
+  invoiceNumber: ReceivedInvoiceNumberInput | null
+  issueDate: string | null
+  dueDate: string | null
+  paymentMethod: PaymentMethod | null
+  retentionRate: number
+  lines: InvoiceLineInput[]
+  /** The total printed on the invoice, to check the lines against. */
+  printedTotal: number | null
+  /** Who the invoice is addressed to. */
+  customerName: string | null
+  /** Whether it is addressed to the account (NIF / CIF of the fiscal data); `null` = unknown. */
+  addressedToAccount: boolean | null
 }
 
 /** A received invoice has no state: it is stored as issued (by its supplier) and can always be edited. */

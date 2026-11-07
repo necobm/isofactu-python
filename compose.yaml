@@ -7,7 +7,7 @@ services:
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-isofactu}
       POSTGRES_USER: ${POSTGRES_USER:-app}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vG7r9yL2qP4sZ8wHPt3KcR1u}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       # Exposed on 5433 on the host (not 5432) to avoid clashing with a local PostgreSQL.
       - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
@@ -55,7 +55,7 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     environment:
       APP_ENV: ${APP_ENV:-dev}
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-vG7r9yL2qP4sZ8wHPt3KcR1u}@db:5432/${POSTGRES_DB:-isofactu}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-isofactu}
       PUBLIC_DIR: /app/public
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       RUN_MIGRATIONS: ${RUN_MIGRATIONS:-1}
@@ -80,7 +80,14 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_STARTTLS: ${SMTP_STARTTLS:-false}
-      MAIL_FROM: ${MAIL_FROM:-Isofactu <no-reply@isofactu.local>}
+      MAIL_FROM: ${MAIL_FROM:-Isofactu <no-reply@isofactutesting.local>}
+      # LLM reading received invoices from PDF (any LiteLLM vendor). Empty provider or
+      # model = PDF import disabled.
+      LLM_PROVIDER: ${LLM_PROVIDER:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_API_BASE: ${LLM_API_BASE:-}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-120}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:

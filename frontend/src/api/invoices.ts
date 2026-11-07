@@ -10,6 +10,7 @@ import type {
   InvoiceCollection,
   InvoiceInput,
   InvoiceState,
+  ReceivedInvoiceDraft,
   ReceivedInvoiceInput,
   Serial,
   SerialInput,
@@ -55,6 +56,17 @@ export const api = {
 
   createReceivedInvoice: (input: ReceivedInvoiceInput) =>
     request<Invoice>('/api/received-invoice', { method: 'POST', body: input }),
+
+  /**
+   * Reads a supplier's invoice from a PDF to pre-fill the form (nothing is stored).
+   * `503` when PDF import is not configured, `413` too large, `422` not a PDF / not an
+   * invoice, `502` unreadable.
+   */
+  extractReceivedInvoice: (file: File, signal?: AbortSignal) => {
+    const body = new FormData()
+    body.append('file', file)
+    return request<ReceivedInvoiceDraft>('/api/received-invoice/extract', { method: 'POST', body, signal })
+  },
 
   /** Replaces a received invoice (they can always be edited). */
   updateReceivedInvoice: (id: number, input: ReceivedInvoiceInput) =>

@@ -16,6 +16,7 @@ export class ApiError extends Error {
 
 interface RequestOptions {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+  /** Sent as JSON, except `FormData` (file uploads), which goes as multipart/form-data. */
   body?: unknown
   query?: object
   signal?: AbortSignal
@@ -40,13 +41,15 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     if (value !== undefined && value !== null) url.searchParams.set(key, String(value))
   }
 
+  const isForm = options.body instanceof FormData
   const response = await fetch(url, {
     method: options.method ?? 'GET',
     headers: {
       Accept: 'application/json',
-      ...(options.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      // Multipart bodies get their Content-Type (with the boundary) from the browser
+      ...(options.body !== undefined && !isForm ? { 'Content-Type': 'application/json' } : {}),
     },
-    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    body: options.body === undefined ? undefined : isForm ? (options.body as FormData) : JSON.stringify(options.body),
     signal: options.signal,
     // The session travels in an HttpOnly cookie (also when the API lives on another origin)
     credentials: 'include',

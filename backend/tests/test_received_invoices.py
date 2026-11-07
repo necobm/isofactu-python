@@ -18,6 +18,7 @@ from app.fixtures import ReceivedInvoiceFactory
 from app.invoicing.invoice_kind import InvoiceKind
 from app.invoicing.invoice_state import InvoiceState
 from app.invoicing.models import FiscalData, Serial
+from app.invoicing.value_objects import InvoiceNumber
 
 SUPPLIER = {
     "fullName": "Suministros Canarios SL",
@@ -31,7 +32,7 @@ SUPPLIER = {
     },
 }
 LINE = {"description": "Material de oficina", "quantity": 2, "unitPrice": 50, "taxRate": 7}
-NUMBER = {"prefix": "A-", "number": "0042"}
+NUMBER = {"number": "FV-2026/0042"}
 TODAY = date.today()
 
 
@@ -65,12 +66,12 @@ async def test_record_a_received_invoice(client: AsyncClient) -> None:
 
     # No lifecycle: stored as issued (by the supplier) straight away
     assert (body["kind"], body["state"], body["serialId"]) == ("RECEIVED", "ISSUED", None)
-    # The number is the supplier's, as entered
+    # The number is the supplier's, whole and as entered
     assert body["invoiceNumber"] == {
-        "prefix": "A-",
-        "number": "0042",
+        "prefix": "",
+        "number": "FV-2026/0042",
         "suffix": "",
-        "formatted": "A-0042",
+        "formatted": "FV-2026/0042",
     }
     # The issuer is the supplier as entered (document normalised) ...
     assert body["issuer"]["fullName"] == "Suministros Canarios SL"
@@ -113,21 +114,26 @@ async def test_the_supplier_number_is_always_required(client: AsyncClient) -> No
     del without_number["invoiceNumber"]
     assert await rejected(without_number) == ["body", "invoiceNumber"]
     assert await rejected(_payload(invoiceNumber=None)) == ["body", "invoiceNumber"]
-    # A blank number counts as missing; a series alone is not a number
-    blank = _payload(invoiceNumber={"prefix": "A-", "number": "  "})
+    # A blank number counts as missing
+    blank = _payload(invoiceNumber={"number": "  "})
     assert await rejected(blank) == ["body", "invoiceNumber", "number"]
-    assert await rejected(_payload(invoiceNumber={"prefix": "A-"})) == [
-        "body",
-        "invoiceNumber",
-        "number",
-    ]
+    assert await rejected(_payload(invoiceNumber={})) == ["body", "invoiceNumber", "number"]
     assert (await client.get("/api/received-invoice")).json()["total"] == 0
 
     # Also when editing
     body = await _create(client)
     path = f"/api/received-invoice/{body['id']}"
     assert await rejected(without_number, "PUT", path) == ["body", "invoiceNumber"]
-    assert (await client.get(path)).json()["invoiceNumber"]["formatted"] == "A-0042"
+    assert (await client.get(path)).json()["invoiceNumber"]["formatted"] == "FV-2026/0042"
+
+
+async def test_the_supplier_number_is_kept_whole(client: AsyncClient) -> None:
+    # There is no series part: a prefix / suffix sent by an older client is not stored apart
+    body = await _create(client, invoiceNumber={"prefix": "A-", "number": "A-0042 / 2026"})
+    assert (body["invoiceNumber"]["prefix"], body["invoiceNumber"]["number"]) == (
+        "",
+        "A-0042 / 2026",
+    )
 
 
 async def test_received_invoices_can_always_be_edited(client: AsyncClient) -> None:
@@ -139,7 +145,7 @@ async def test_received_invoices_can_always_be_edited(client: AsyncClient) -> No
         path,
         json=_payload(
             issuer=other_supplier,
-            invoiceNumber={"number": "7", "suffix": "/B"},
+            invoiceNumber={"number": "7/B"},
             notes="corregida",
             lines=[{"description": "Alquiler", "quantity": 1, "unitPrice": 600, "taxRate": 21}],
         ),
@@ -269,7 +275,7 @@ async def test_received_invoices_do_not_touch_the_serials(
     client: AsyncClient, serial: Serial
 ) -> None:
     # A supplier that happens to use the same series as ours, with a high number
-    await _create(client, invoiceNumber={"prefix": "F-2026-", "number": "99"})
+    await _create(client, invoiceNumber={"number": "F-2026-99"})
     # Extra fields such as a serial are ignored: received invoices never take one
     body = await _create(client, serialId=serial.id)
     assert body["serialId"] is None
@@ -324,4 +330,14 @@ async def test_the_database_refuses_a_received_draft(
 ) -> None:
     received_invoice_factory(owner=tenant, state=InvoiceState.DRAFT, lines=1)
     with pytest.raises(IntegrityError, match="ck_invoice_received_state"):
+        await session.flush()
+
+
+async def test_the_database_keeps_received_numbers_whole(
+    session: AsyncSession,
+    tenant: User,
+    received_invoice_factory: type[ReceivedInvoiceFactory],
+) -> None:
+    received_invoice_factory(owner=tenant, invoice_number=InvoiceNumber("A-", "42"), lines=1)
+    with pytest.raises(IntegrityError, match="ck_invoice_received_whole_number"):
         await session.flush()

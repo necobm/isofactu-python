@@ -6,14 +6,22 @@ data: the repositories are bound to the current user.
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounts.deps import CurrentTenant
 from app.accounts.models import User
 from app.clients.models import Client
 from app.clients.repository import ClientRepository
+from app.core.config import get_settings
 from app.core.database import get_session
+from app.invoicing.extraction import (
+    ExtractionError,
+    InvoiceExtractor,
+    UnreadablePdf,
+    draft_from,
+    get_invoice_extractor,
+)
 from app.invoicing.invoice_kind import InvoiceKind
 from app.invoicing.invoice_state import InvoiceState
 from app.invoicing.models import FiscalData, Invoice, InvoiceLine, Serial, Subject
@@ -33,6 +41,7 @@ from app.invoicing.schemas import (
     InvoiceUpdate,
     InvoiceWrite,
     ReceivedInvoiceCreate,
+    ReceivedInvoiceDraft,
     ReceivedInvoiceUpdate,
     ReceivedInvoiceWrite,
     SerialRead,
@@ -239,10 +248,10 @@ async def _current_fiscal_data(session: AsyncSession, tenant: User) -> FiscalDat
     return data
 
 
-def _validation_error(field: str, message: str) -> HTTPException:
+def _validation_error(field: str, message: str, type_: str = "value_error") -> HTTPException:
     return HTTPException(
         status.HTTP_422_UNPROCESSABLE_CONTENT,
-        [{"loc": ["body", field], "msg": message, "type": "value_error"}],
+        [{"loc": ["body", field], "msg": message, "type": type_}],
     )
 
 
@@ -539,3 +548,55 @@ async def update_received_invoice(
 
     await session.commit()
     return await repo.reload(invoice)
+
+
+ExtractorDep = Annotated[InvoiceExtractor | None, Depends(get_invoice_extractor)]
+PDF_MAGIC = b"%PDF-"
+
+
+@received_invoice_router.post(
+    "/extract",
+    response_model=ReceivedInvoiceDraft,
+    summary="Read a received invoice from a PDF",
+    description=(
+        "Reads the supplier, number, dates, lines, VAT and IRPF of the uploaded invoice (any "
+        "layout) with the configured LLM, so that the form can be pre-filled. **Nothing is "
+        "stored**: review the draft and save it with `POST /api/received-invoice`. The PDF is "
+        "sent to the LLM vendor. `503` when PDF import is not configured, `413` when the file "
+        "is too large, `422` when it cannot be used (`type`: `not_pdf`, `no_text` -- a scan "
+        "and a model that cannot read PDF files --, or `not_invoice`), `502` when the LLM "
+        "could not read it."
+    ),
+)
+async def extract_received_invoice(
+    tenant: CurrentTenant,
+    session: SessionDep,
+    extractor: ExtractorDep,
+    file: Annotated[UploadFile, File(description="The supplier's invoice, as a PDF")],
+) -> ReceivedInvoiceDraft:
+    if extractor is None:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "PDF import is not configured on this server (LLM_PROVIDER / LLM_MODEL)",
+        )
+    limit = get_settings().invoice_pdf_max_bytes
+    pdf = await file.read(limit + 1)
+    if len(pdf) > limit:
+        raise HTTPException(
+            status.HTTP_413_CONTENT_TOO_LARGE, f"The PDF cannot be larger than {limit} bytes"
+        )
+    if not pdf.startswith(PDF_MAGIC):
+        raise _validation_error("file", "The file is not a PDF", "not_pdf")
+
+    account = await FiscalDataRepository(session, tenant.id).get()
+    try:
+        raw = await extractor.extract(pdf, customer=account.as_issuer() if account else None)
+    except UnreadablePdf as exc:
+        raise _validation_error("file", str(exc), exc.reason) from exc
+    except ExtractionError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, "The invoice could not be read from the PDF"
+        ) from exc
+    if raw.get("is_invoice") is False:
+        raise _validation_error("file", "The PDF does not look like an invoice", "not_invoice")
+    return draft_from(raw, account)

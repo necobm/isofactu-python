@@ -11,6 +11,12 @@ bcrypt>=4.1,<6.0
 PyJWT>=2.8,<3.0
 # countries / provinces (ISO 3166) for address forms
 pycountry>=24.6,<27.0
+# uploads (multipart form data, e.g. the PDF of a received invoice)
+python-multipart>=0.0.9,<1.0
+# reading received invoices from PDF: any LLM vendor through LiteLLM; pypdf gives models that
+# cannot read PDF files the text of the invoice instead
+litellm>=1.106,<2.0
+pypdf>=5.0,<7.0
 # fixtures + management CLI
 factory_boy>=3.3,<4.0
 typer>=0.12,<1.0

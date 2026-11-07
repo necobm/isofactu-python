@@ -66,6 +66,19 @@ class Settings(BaseSettings):
     smtp_timeout: float = 10.0
     mail_from: str = "Isofactu <no-reply@isofactu.local>"
 
+    # -- LLM (PDF import of received invoices) -------------------------------------------
+    # Any vendor supported by LiteLLM (https://docs.litellm.ai/docs/providers). The PDF of
+    # the invoice is sent to that vendor. Leave LLM_PROVIDER / LLM_MODEL empty to disable.
+    llm_provider: str = Field(default="", description="anthropic | openai | gemini | ollama ...")
+    llm_model: str = Field(default="", description="The vendor's model name, e.g. gpt-4o")
+    # Optional: without it LiteLLM uses the vendor's usual variable (OPENAI_API_KEY...),
+    # and local models (Ollama) need none.
+    llm_api_key: str = ""
+    # Optional: a custom endpoint (Ollama server, Azure deployment, proxy...).
+    llm_api_base: str = ""
+    llm_timeout: float = Field(default=120.0, gt=0)
+    invoice_pdf_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1)
+
     @field_validator("database_url")
     @classmethod
     def _normalise_database_url(cls, value: str) -> str:
@@ -105,6 +118,19 @@ class Settings(BaseSettings):
     @property
     def mail_enabled(self) -> bool:
         return bool(self.smtp_host)
+
+    @property
+    def llm_model_id(self) -> str:
+        """The model as LiteLLM names it: ``provider/model`` (``anthropic/claude-sonnet-4-5``),
+        or empty when no LLM is configured."""
+        provider, model = self.llm_provider.strip().lower(), self.llm_model.strip()
+        if not provider or not model:
+            return ""
+        return model if model.startswith(f"{provider}/") else f"{provider}/{model}"
+
+    @property
+    def pdf_import_enabled(self) -> bool:
+        return bool(self.llm_model_id)
 
 
 @lru_cache

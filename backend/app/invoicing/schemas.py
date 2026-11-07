@@ -336,15 +336,10 @@ class InvoiceUpdate(InvoiceWrite):
 
 
 class ReceivedInvoiceNumberWrite(ApiModel):
-    """The number printed on a supplier's invoice, as entered: an optional series
-    (`prefix`), the number itself and an optional `suffix`. Free text: suppliers number
-    their invoices however they like."""
+    """The number printed on a supplier's invoice, whole and as printed (any series, prefix
+    or suffix included: which part is which is the supplier's business)."""
 
-    prefix: str = Field(
-        default="", max_length=100, description="The supplier's series", examples=["A-2026-"]
-    )
-    number: str = Field(min_length=1, max_length=100, examples=["0042"])
-    suffix: str = Field(default="", max_length=100, examples=[""])
+    number: str = Field(min_length=1, max_length=100, examples=["FV-2026/0042"])
 
 
 class ReceivedInvoiceWrite(InvoiceContent):
@@ -366,6 +361,38 @@ class ReceivedInvoiceCreate(ReceivedInvoiceWrite):
 class ReceivedInvoiceUpdate(ReceivedInvoiceWrite):
     """Full replacement of a received invoice (its lines included). Received invoices can
     always be edited."""
+
+
+class PartyDraft(ApiModel):
+    """A party as read from a document: any field may be empty."""
+
+    full_name: str = ""
+    document: IdentificationDocumentSchema
+    address: AddressSchema
+
+
+class ReceivedInvoiceDraft(ApiModel):
+    """What could be read from the PDF of a received invoice, to pre-fill the form. Nothing
+    is stored: once reviewed, it is saved with `POST /api/received-invoice`. Whatever could
+    not be read is empty / `null`."""
+
+    issuer: PartyDraft = Field(description="The supplier")
+    invoice_number: ReceivedInvoiceNumberWrite | None
+    issue_date: date | None
+    due_date: date | None
+    payment_method: PaymentMethod | None
+    retention_rate: Rate
+    lines: list[InvoiceLineBase]
+    printed_total: Money | None = Field(
+        description="The total printed on the invoice, to check the lines against"
+    )
+    customer_name: str | None = Field(description="Who the invoice is addressed to")
+    addressed_to_account: bool | None = Field(
+        description=(
+            "Whether the invoice is addressed to the account (the customer's NIF / CIF is the "
+            "one in the fiscal data); `null` when it cannot be told"
+        )
+    )
 
 
 class InvoiceRead(ApiModel):

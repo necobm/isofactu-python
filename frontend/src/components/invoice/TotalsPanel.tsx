@@ -1,7 +1,7 @@
 import type { PaymentMethod } from '@/api'
 import { formatAmount } from '@/lib/format'
 import { PAYMENT_METHOD_LABELS, PAYMENT_METHODS } from './paymentMethods'
-import { RETENTION_OPTIONS } from './retention'
+import { retentionOptions } from './retention'
 
 export interface TaxBreakdownEntry {
   rate: number
@@ -25,6 +25,8 @@ interface TotalsPanelProps {
   onPaymentMethodChange: (method: PaymentMethod) => void
   onIssueDateChange: (date: string) => void
   onDueDateChange: (date: string) => void
+  /** Shown faded and not interactive (e.g. while the form is being filled in from a PDF). */
+  dimmed?: boolean
 }
 
 const FIELD_CLASS =
@@ -44,9 +46,10 @@ export default function TotalsPanel({
   onPaymentMethodChange,
   onIssueDateChange,
   onDueDateChange,
+  dimmed = false,
 }: TotalsPanelProps) {
   return (
-    <div className="sticky top-24">
+    <div className={`sticky top-24 transition-opacity ${dimmed ? 'opacity-50 pointer-events-none' : ''}`}>
       {/* Totals — dark header */}
       <div className="rounded-xl overflow-hidden border border-slate-200">
         <div className="bg-slate-900 px-5 py-4 space-y-3">
@@ -94,7 +97,7 @@ export default function TotalsPanel({
               onChange={(e) => onRetentionRateChange(e.target.value === '' ? null : Number(e.target.value))}
               className={FIELD_CLASS}
             >
-              {RETENTION_OPTIONS.map((option) => (
+              {retentionOptions(retentionRate).map((option) => (
                 <option key={option.label} value={option.value ?? ''}>{option.label}</option>
               ))}
             </select>

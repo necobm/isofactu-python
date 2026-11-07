@@ -168,6 +168,10 @@ class Invoice(Base):
     __table_args__ = (
         CheckConstraint("kind = 'ISSUED' OR serial_id IS NULL", name="serial_kind"),
         CheckConstraint("kind = 'ISSUED' OR state = 'ISSUED'", name="received_state"),
+        CheckConstraint(
+            "kind = 'ISSUED' OR (number_prefix = '' AND number_suffix = '')",
+            name="received_whole_number",
+        ),
     )
 
     id: Mapped[int] = mapped_column(init=False, primary_key=True)
@@ -200,8 +204,8 @@ class Invoice(Base):
 
     issue_date: Mapped[date] = mapped_column(Date, default_factory=date.today, index=True)
     # Issued invoices: unassigned (`number` NULL) while a draft; prefix and suffix are a copy
-    # of the serial's at the time of issuing. Received invoices: the supplier's series
-    # (prefix) and number as entered.
+    # of the serial's at the time of issuing. Received invoices: the supplier's number, whole
+    # and as printed, in `number` (prefix and suffix stay empty).
     invoice_number: Mapped[InvoiceNumber] = composite(
         mapped_column("number_prefix", String(100)),
         mapped_column("number", String(100), nullable=True),

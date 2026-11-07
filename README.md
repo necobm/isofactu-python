@@ -41,9 +41,13 @@ The core of **issued invoices** works end to end (API + UI):
       client as its recipient (`Subject`), never a reference. See [Clients](#clients).
 - [x] **Received invoices (expenses)** — *Facturas* is split into *Emitidas* and *Recibidas*.
       Received invoices have the same concepts, VAT, IRPF, dates, payment method and notes as
-      issued ones; the supplier and its series / number are typed in, the account's fiscal data
+      issued ones; the supplier and its invoice number are typed in, the account's fiscal data
       is the recipient, and there are no drafts: they can always be edited. See
       [Received invoices](#received-invoices-expenses).
+- [x] **Import received invoices from PDF** — upload the supplier's PDF (any layout, scans
+      included) and the form is filled in from it, to review before saving. Read by an LLM of
+      any vendor (LiteLLM); off unless `LLM_PROVIDER` / `LLM_MODEL` are set. See
+      [Importing from PDF](#importing-from-pdf).
 
 Partially there, with known gaps:
 
@@ -84,6 +88,7 @@ Partially there, with known gaps:
 | Auth       | bcrypt password hashes, signed HttpOnly session cookie (PyJWT) |
 | Geo data   | ISO 3166 countries / provinces (pycountry, Spanish names), GeoNames postal codes and localities |
 | E-mail     | SMTP (stdlib) — Mailpit in development                  |
+| Invoice reading | Any LLM vendor through LiteLLM (+ pypdf): PDF import of received invoices |
 | Runtime    | Docker Compose                                          |
 
 The backend exposes a JSON API under `/api` (OpenAPI contract at `/api/docs`) and serves the
@@ -96,8 +101,14 @@ Requirements: Docker with Compose v2. Nothing else needs to be installed on the 
 Node, pytest, ruff, eslint, Alembic… all run inside the containers.
 
 ```bash
+cp .env.example .env               # then fill in the values (see below)
 docker compose up --build          # or: make up
 ```
+
+`.env.example` is a template: `.env` itself is git-ignored and must never be committed, as it
+holds the passwords and secrets. At least set `POSTGRES_USER` / `POSTGRES_PASSWORD` (compose
+has no default database password), a random `SECRET_KEY`, and the first `SUPER_ADMIN_EMAIL` /
+`SUPER_ADMIN_PASSWORD`. Real environment variables take precedence over `.env`.
 
 This starts four things:
 
@@ -109,7 +120,7 @@ This starts four things:
 
 Open http://localhost:8000 for the app and http://localhost:8000/api/docs for the API documentation.
 
-Log in with the `SUPER_ADMIN` account from `.env` (`admin@isofactu.local` / `admin1234` by default)
+Log in with the `SUPER_ADMIN` account set in your `.env`
 to reach the account management panel, create an `ADMIN` account (a tenant) and pick up its
 activation link in Mailpit. Or populate the database with generated fixtures —
 `LOAD_FIXTURES=1 docker compose up --build` — which also creates a demo tenant you can log in as
@@ -134,8 +145,8 @@ prints the underlying `docker compose` command when it runs.
 <details>
 <summary>Running the backend directly on the host (optional)</summary>
 
-If you prefer a local virtualenv, the root `.env` already points `DATABASE_URL` at the Dockerised
-database:
+If you prefer a local virtualenv, point `DATABASE_URL` in your `.env` at the Dockerised
+database (`postgresql+psycopg://<user>:<password>@127.0.0.1:5433/isofactu`):
 
 ```bash
 docker compose up -d db mailpit
@@ -147,7 +158,7 @@ python -m app.cli users create-super-admin --email admin@isofactu.local   # prom
 uvicorn app.main:app --reload       # http://localhost:8000
 ```
 
-The root `.env` points `SMTP_HOST` at the Mailpit container's published port. With `SMTP_HOST`
+`.env.example` points `SMTP_HOST` at the Mailpit container's published port. With `SMTP_HOST`
 empty, outgoing e-mails are written to the backend log instead (activation links included).
 
 Likewise `cd frontend && npm install && npm run dev` runs the Vite dev server on the host.
@@ -203,6 +214,7 @@ session (see [Accounts & authentication](#accounts--authentication)). Invoicing 
 | GET    | `/api/received-invoice/{id}`            | ADMIN        | Received invoice detail                        |
 | POST   | `/api/received-invoice`                 | ADMIN        | Record a supplier's invoice: supplier, number (required) and lines as entered (`409` until the fiscal data is set) |
 | PUT    | `/api/received-invoice/{id}`            | ADMIN        | Replace a received invoice (always allowed)    |
+| POST   | `/api/received-invoice/extract`         | ADMIN        | Read a supplier's invoice from a PDF (multipart `file`) → a draft to pre-fill the form; nothing is stored |
 
 Example — `GET /api/invoice`:
 
@@ -286,7 +298,7 @@ retention, issue / due date, payment method and notes — except:
 |---|---|---|
 | `issuer` | The account's fiscal data, stamped by the server | **The supplier, typed in** (`issuer` in the payload) |
 | `recipient` | A copy of the client `clientId` | The account's fiscal data, stamped by the server when the invoice is recorded |
-| `invoiceNumber` | Next number of the serial `serialId`, assigned when issuing | **The supplier's series (`prefix`, optional) and `number` (required), typed in** |
+| `invoiceNumber` | Next number of the serial `serialId`, assigned when issuing | **The supplier's number, whole and as printed (`{"number": "FV-2026/0042"}`), required** — which part of it is a series is not the user's concern, so `prefix` / `suffix` stay empty |
 | `serialId` | The serial used | Always `null`: received invoices never take a number from, or lock, a serial |
 | `state` | `DRAFT` → `ISSUED`; immutable once issued | Not in the payload; always `ISSUED` (the supplier issued it), and **always editable** |
 
@@ -303,7 +315,67 @@ check constraints keep received invoices without a serial and in the `ISSUED` st
 `0009` adds the column and marks every existing invoice as issued (its downgrade deletes the
 received invoices); `0010` turns received drafts recorded with the first version of the feature
 into plain received invoices (one without a number shows none until it is edited, which
-requires it).
+requires it); `0011` folds the series some received numbers were stored with into the number
+itself (they render the same).
+
+### Importing from PDF
+
+When recording a received invoice, *Importar desde PDF* (right column) takes the supplier's
+PDF and fills in the form with what it reads: supplier (name, NIF / CIF, address), invoice
+number, dates, payment method, concepts with their VAT rate, and IRPF. While the PDF is read
+(a few seconds) the form is locked and the button shows a spinner. **Nothing is saved**: the
+user reviews the data and saves as usual. The panel also warns when the invoice is addressed
+to someone other than the account, and when the concepts do not add up to the total printed
+on the invoice (live, until they match).
+
+How it works (`app/invoicing/extraction.py`, `POST /api/received-invoice/extract`):
+
+- Supplier invoices come in every layout, and some are scans, so they are not parsed with
+  rules: they are read by an **LLM**, reached through [LiteLLM](https://docs.litellm.ai/) so
+  that the vendor and model are just configuration (Anthropic, OpenAI, Gemini, Mistral, Azure,
+  Bedrock, a local Ollama...). The model must answer with JSON following a schema of the data
+  we need (using the vendor's structured output when LiteLLM knows it has one, the prompt
+  otherwise). The account's fiscal data is given as the expected customer, so that the
+  supplier is not mixed up with it.
+- Models that can read PDF files (Claude, GPT-4o, Gemini...) get the PDF itself, so **scanned
+  invoices** work too. The others get the PDF's text layer (pypdf): they work with regular
+  PDFs, while a scan is refused with a message saying so.
+- The answer is treated as untrusted input and normalised before reaching the form: NIF /
+  CIF detected by their check character (`ESB12345674` → CIF `B12345674`), Spanish provinces
+  derived from the postal code (invoices print "Bizkaia", "Lleida", "A Coruña"...), amounts
+  rounded to cents, rates bounded, anything unusable left empty.
+- Rates outside the form's presets (IGIC 7 %, the 19 % IRPF of rents...) are kept and shown.
+
+Configuration (`.env` / environment; see `.env.example`):
+
+| Variable | Default | |
+|---|---|---|
+| `LLM_PROVIDER` | *(empty)* | A [LiteLLM provider](https://docs.litellm.ai/docs/providers): `anthropic`, `openai`, `gemini`, `mistral`, `azure`, `bedrock`, `ollama`... |
+| `LLM_MODEL` | *(empty)* | The vendor's model, e.g. `claude-sonnet-4-5`, `gpt-4o`, `gemini-2.5-flash`, `llama3.1`. With `LLM_PROVIDER`, enables the feature; without them the button answers that PDF import is not available (`503`). |
+| `LLM_API_KEY` | *(empty)* | The vendor's API key (a secret: only in your `.env`). Not needed by local models. |
+| `LLM_API_BASE` | *(empty)* | A custom endpoint: an Ollama server, an Azure deployment, a proxy... |
+| `LLM_TIMEOUT` | `120` | Seconds before giving up on a PDF |
+| `INVOICE_PDF_MAX_BYTES` | `10485760` | Largest PDF accepted (`413` above) |
+
+For example:
+
+```bash
+LLM_PROVIDER=anthropic  LLM_MODEL=claude-sonnet-4-5  LLM_API_KEY=sk-ant-...
+LLM_PROVIDER=openai     LLM_MODEL=gpt-4o             LLM_API_KEY=sk-...
+LLM_PROVIDER=gemini     LLM_MODEL=gemini-2.5-flash   LLM_API_KEY=...
+LLM_PROVIDER=ollama     LLM_MODEL=llama3.1           LLM_API_BASE=http://host.docker.internal:11434
+```
+
+Vendors that need more than a key (the API version of Azure, the AWS credentials of
+Bedrock...) read LiteLLM's own variables for them (`AZURE_API_VERSION`, `AWS_REGION_NAME`...):
+add those to the `backend` service environment in `compose.yaml`. LiteLLM is set to use the
+model metadata bundled with it rather than downloading it from GitHub at run time.
+
+> **Privacy.** Importing sends the PDF — personal and financial data of the supplier and of
+> the account — to the configured LLM vendor (nothing leaves your network with a local
+> model). Make sure that is acceptable (and covered by your data processing agreements)
+> before enabling it in production. The backend never logs the contents of an invoice. With
+> a hosted vendor, every import is a paid API call.
 
 ## Clients
 
@@ -434,7 +506,7 @@ legacy data) from the panel. Fresh databases do not get that account.
 ```
 isofactu/
 ├── compose.yaml               # Docker Compose: db, mailpit, backend, frontend-build, frontend (dev profile)
-├── .env                       # Shared defaults (Postgres, ports, SECRET_KEY, SMTP, first SUPER_ADMIN)
+├── .env.example               # Template of `.env` (git-ignored): Postgres, ports, SECRET_KEY, SMTP, first SUPER_ADMIN, LLM
 ├── backend/
 │   ├── app/
 │   │   ├── main.py            # FastAPI app factory (/api/docs, CORS, SPA mount)
@@ -459,6 +531,7 @@ isofactu/
 │   │   │   ├── value_objects.py  # InvoiceNumber, IdentificationDocument, Address, Issuer (composites)
 │   │   │   ├── document_type.py  # CIF | NIF | OTHER
 │   │   │   ├── invoice_kind.py   # ISSUED | RECEIVED (income / expense)
+│   │   │   ├── extraction.py  #   Reading received invoices from PDF (any LLM, via LiteLLM) into a form draft
 │   │   │   ├── invoice_state.py  # DRAFT | ISSUED
 │   │   │   ├── payment_method.py # TRANSFER | CASH | CARD | DIRECT_DEBIT
 │   │   │   ├── money.py       #   bcmath-compatible decimal helpers
@@ -495,7 +568,7 @@ isofactu/
 - **Subject** — an invoice's own copy of its recipient: taken from a client when an issued invoice is created, or from the fiscal data for a received one.
 - **Invoice** — of a `kind`: `ISSUED` (income) or `RECEIVED` (expense). Carries a copy of its issuer (**Issuer** value object: the fiscal data, or the supplier as typed in), links a recipient, has a date, an invoice number, a state (`DRAFT` → `ISSUED` for issued invoices; received ones are always `ISSUED` and stay editable) and an optional IRPF retention rate, and contains one or more lines.
 - **InvoiceLine** — a concept with description, quantity, unit price and VAT rate. Amounts are computed with fixed-point decimals.
-- **InvoiceNumber** — value object: prefix + sequential number + suffix (`F-2026-42`), copied from the serial at issue time; unassigned while the invoice is a draft. On a received invoice, the supplier's series and number as typed in.
+- **InvoiceNumber** — value object: prefix + sequential number + suffix (`F-2026-42`), copied from the serial at issue time; unassigned while the invoice is a draft. On a received invoice, the supplier's whole number as printed (no prefix / suffix).
 
 ## Fixtures
 

@@ -1,6 +1,6 @@
 import { formatAmount } from '@/lib/format'
 import { lineAmounts } from '@/lib/money'
-import { VAT_RATE_OPTIONS, type LineDraft } from './taxes'
+import { vatRateOptions, type LineDraft } from './taxes'
 
 interface ConceptsTableProps {
   lines: LineDraft[]
@@ -88,7 +88,7 @@ export default function ConceptsTable({ lines, onLineChange, onAddLine, onRemove
                       onChange={(e) => onLineChange(line.id, 'taxRate', Number(e.target.value))}
                       className="w-full text-sm text-slate-700 border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent bg-white"
                     >
-                      {VAT_RATE_OPTIONS.map((opt) => (
+                      {vatRateOptions(line.taxRate).map((opt) => (
                         <option key={opt.value} value={opt.value}>{opt.label}</option>
                       ))}
                     </select>

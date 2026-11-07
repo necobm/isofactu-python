@@ -103,6 +103,31 @@ def find_province(country_code: str, value: str) -> Province | None:
     return None
 
 
+# The first two digits of a Spanish postal code are the INE code of its province.
+_SPANISH_PROVINCE_BY_INE_CODE = {
+    "01": "ES-VI", "02": "ES-AB", "03": "ES-A", "04": "ES-AL", "05": "ES-AV", "06": "ES-BA",
+    "07": "ES-PM", "08": "ES-B", "09": "ES-BU", "10": "ES-CC", "11": "ES-CA", "12": "ES-CS",
+    "13": "ES-CR", "14": "ES-CO", "15": "ES-C", "16": "ES-CU", "17": "ES-GI", "18": "ES-GR",
+    "19": "ES-GU", "20": "ES-SS", "21": "ES-H", "22": "ES-HU", "23": "ES-J", "24": "ES-LE",
+    "25": "ES-L", "26": "ES-LO", "27": "ES-LU", "28": "ES-M", "29": "ES-MA", "30": "ES-MU",
+    "31": "ES-NA", "32": "ES-OR", "33": "ES-O", "34": "ES-P", "35": "ES-GC", "36": "ES-PO",
+    "37": "ES-SA", "38": "ES-TF", "39": "ES-S", "40": "ES-SG", "41": "ES-SE", "42": "ES-SO",
+    "43": "ES-T", "44": "ES-TE", "45": "ES-TO", "46": "ES-V", "47": "ES-VA", "48": "ES-BI",
+    "49": "ES-ZA", "50": "ES-Z", "51": "ES-CE", "52": "ES-ML",
+}  # fmt: skip
+
+
+def spanish_province_of_postal_code(postal_code: str) -> Province | None:
+    """The Spanish province a postal code belongs to (``48001`` -> Vizcaya), or None when
+    the value is not a Spanish postal code. Unlike names, which invoices print in any of
+    the official languages ("Bizkaia", "A Coruña", "Lleida"...), the code is unambiguous."""
+    value = postal_code.strip()
+    if not re.fullmatch(r"\d{5}", value):
+        return None
+    code = _SPANISH_PROVINCE_BY_INE_CODE.get(value[:2])
+    return next((p for p in provinces("ES") if p.code == code), None)
+
+
 def cities(country_code: str, province_code: str) -> tuple[str, ...]:
     """Known localities of a province: those keyed by the province itself, else by its
     parent division (GeoNames only records the autonomous community of Spanish

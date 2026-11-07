@@ -15,6 +15,9 @@ dependencies = [
     "bcrypt>=4.1,<6.0",
     "PyJWT>=2.8,<3.0",
     "pycountry>=24.6,<27.0",
+    "python-multipart>=0.0.9,<1.0",
+    "litellm>=1.106,<2.0",
+    "pypdf>=5.0,<7.0",
     "factory_boy>=3.3,<4.0",
     "typer>=0.12,<1.0",
 ]
