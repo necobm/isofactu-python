@@ -12,6 +12,8 @@ dependencies = [
     "alembic>=1.13,<2.0",
     "pydantic>=2.8,<3.0",
     "pydantic-settings>=2.3,<3.0",
+    "bcrypt>=4.1,<6.0",
+    "PyJWT>=2.8,<3.0",
     "factory_boy>=3.3,<4.0",
     "typer>=0.12,<1.0",
 ]

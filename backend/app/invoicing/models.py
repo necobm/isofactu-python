@@ -2,6 +2,9 @@
 
 Table / column names intentionally mirror what Doctrine's `underscore_number_aware`
 naming strategy would have generated for the original PHP entities.
+
+Every subject and invoice belongs to one tenant (its `owner`, an ADMIN user); the
+repositories only ever see the rows of the current tenant.
 """
 
 from __future__ import annotations
@@ -12,6 +15,7 @@ from decimal import Decimal
 from sqlalchemy import Date, Enum, ForeignKey, Numeric, String, Text
 from sqlalchemy.orm import Mapped, composite, mapped_column, relationship
 
+from app.accounts.models import User
 from app.core.database import Base
 from app.invoicing.document_type import DocumentType
 from app.invoicing.invoice_state import InvoiceState
@@ -26,6 +30,10 @@ class Subject(Base):
     __tablename__ = "subject"
 
     id: Mapped[int] = mapped_column(init=False, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("user_account.id", ondelete="CASCADE"), init=False, index=True
+    )
+    owner: Mapped[User] = relationship(repr=False)
     full_name: Mapped[str] = mapped_column(String(255), default="")
     document: Mapped[IdentificationDocument] = composite(
         mapped_column(
@@ -54,6 +62,10 @@ class Invoice(Base):
     __tablename__ = "invoice"
 
     id: Mapped[int] = mapped_column(init=False, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("user_account.id", ondelete="CASCADE"), init=False, index=True
+    )
+    owner: Mapped[User] = relationship(repr=False)
     issuer_id: Mapped[int] = mapped_column(ForeignKey("subject.id"), init=False, index=True)
     recipient_id: Mapped[int] = mapped_column(ForeignKey("subject.id"), init=False, index=True)
 

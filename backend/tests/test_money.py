@@ -4,10 +4,19 @@ from decimal import Decimal
 
 import pytest
 
+from app.accounts.models import User
 from app.invoicing.document_type import DocumentType
 from app.invoicing.models import Invoice, InvoiceLine, Subject
 from app.invoicing.money import bcadd, bcdiv, bcmul, bcsub, scale
 from app.invoicing.value_objects import Address, IdentificationDocument, InvoiceNumber
+
+
+def _invoice(**kwargs) -> Invoice:
+    """A transient invoice between two blank subjects of the same tenant."""
+    owner = User(email="tenant@example.com")
+    return Invoice(
+        owner=owner, issuer=Subject(owner=owner), recipient=Subject(owner=owner), **kwargs
+    )
 
 
 @pytest.mark.parametrize(
@@ -42,7 +51,7 @@ def test_invoice_line_amounts() -> None:
 
 
 def test_invoice_retention_applies_to_the_subtotal() -> None:
-    invoice = Invoice(issuer=Subject(), recipient=Subject(), retention_rate=Decimal("15"))
+    invoice = _invoice(retention_rate=Decimal("15"))
     invoice.add_line(
         InvoiceLine(quantity=Decimal("1"), unit_price=Decimal("99.99"), tax_rate=Decimal("21"))
     )
@@ -66,9 +75,14 @@ def test_invoice_line_defaults() -> None:
 
 
 def test_invoice_totals_and_line_management() -> None:
-    issuer = Subject(full_name="Issuer", document=IdentificationDocument(DocumentType.NIF, "1"))
-    recipient = Subject(full_name="Recipient")
-    invoice = Invoice(issuer=issuer, recipient=recipient, invoice_number=InvoiceNumber("F", "1"))
+    owner = User(email="tenant@example.com")
+    issuer = Subject(
+        owner=owner, full_name="Issuer", document=IdentificationDocument(DocumentType.NIF, "1")
+    )
+    recipient = Subject(owner=owner, full_name="Recipient")
+    invoice = Invoice(
+        owner=owner, issuer=issuer, recipient=recipient, invoice_number=InvoiceNumber("F", "1")
+    )
 
     first = InvoiceLine(
         description="a", quantity=Decimal("2"), unit_price=Decimal("10"), tax_rate=Decimal("21")
@@ -99,12 +113,9 @@ def test_value_objects_string_representation() -> None:
     assert InvoiceNumber("F-2026", "42").is_assigned
     assert not InvoiceNumber().is_assigned and str(InvoiceNumber()) == ""
     assert not InvoiceNumber("F-2026", "").is_assigned
-    assert str(Invoice(issuer=Subject(), recipient=Subject())) == "(draft)"
+    assert str(_invoice()) == "(draft)"
     assert str(IdentificationDocument(DocumentType.CIF, "B123")) == "CIF: B123"
     assert (
         str(Address("Calle 1", "28001", "Madrid", "Madrid")) == "Calle 1, 28001 Madrid, Madrid (ES)"
     )
-    assert (
-        str(Invoice(issuer=Subject(), recipient=Subject(), invoice_number=InvoiceNumber("A", "7")))
-        == "A-7"
-    )
+    assert str(_invoice(invoice_number=InvoiceNumber("A", "7"))) == "A-7"

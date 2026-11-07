@@ -8,6 +8,7 @@ Usage::
 
     InvoiceFactory.build()                 # transient object, no session needed
     SubjectFactory(document__type=DocumentType.CIF, full_name="ACME SL")
+    InvoiceFactory(owner=tenant)           # the invoice and its parties belong to `tenant`
 
 Factories only call ``session.add`` (no implicit flush/commit) so they work identically with
 ``AsyncSession``; flushing and committing stay explicit and under the caller's control.
@@ -28,6 +29,9 @@ from factory.alchemy import SQLAlchemyModelFactory
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
+from app.accounts.account_status import AccountStatus
+from app.accounts.models import User
+from app.accounts.role import Role
 from app.invoicing.document_type import DocumentType
 from app.invoicing.invoice_state import InvoiceState
 from app.invoicing.models import Invoice, InvoiceLine, Subject
@@ -170,10 +174,24 @@ class InvoiceNumberFactory(factory.Factory):
 # -- entities -------------------------------------------------------------------------
 
 
+class UserFactory(BaseFactory):
+    """An active ADMIN (tenant) without a password; pass ``password_hash`` to allow
+    logging in (see ``hash_password``)."""
+
+    class Meta:
+        model = User
+
+    email = factory.Sequence(lambda n: f"user{n + 1}@example.com")
+    name = factory.Faker("name", locale=LOCALE)
+    role = Role.ADMIN
+    status = AccountStatus.ACTIVE
+
+
 class SubjectFactory(BaseFactory):
     class Meta:
         model = Subject
 
+    owner = factory.SubFactory(UserFactory)
     document = factory.SubFactory(IdentificationDocumentFactory)
     address = factory.SubFactory(AddressFactory)
 
@@ -202,6 +220,8 @@ class InvoiceFactory(BaseFactory):
     amount, as the API requires.
     Most invoices are ISSUED; about one in five is left as a DRAFT, which carries no
     invoice number (``InvoiceFactory(state=InvoiceState.ISSUED)`` pins the state).
+    The invoice and its generated parties share the same ``owner`` (tenant); pass
+    ``owner=user`` to pin it (explicit ``issuer`` / ``recipient`` keep their own owner).
     """
 
     class Meta:
@@ -210,8 +230,9 @@ class InvoiceFactory(BaseFactory):
     class Params:
         is_draft = factory.LazyAttribute(lambda o: o.state is InvoiceState.DRAFT)
 
-    issuer = factory.SubFactory(SubjectFactory)
-    recipient = factory.SubFactory(SubjectFactory)
+    owner = factory.SubFactory(UserFactory)
+    issuer = factory.SubFactory(SubjectFactory, owner=factory.SelfAttribute("..owner"))
+    recipient = factory.SubFactory(SubjectFactory, owner=factory.SelfAttribute("..owner"))
     issue_date = fuzzy.FuzzyDate(dt.date.today() - dt.timedelta(days=365), dt.date.today())
     state = factory.LazyFunction(
         lambda: (

@@ -81,6 +81,47 @@ export interface HealthStatus {
   version: string
 }
 
+// -- accounts ------------------------------------------------------------------------
+
+/** SUPER_ADMIN manages the accounts of the system; ADMIN is a tenant with its own data. */
+export type Role = 'SUPER_ADMIN' | 'ADMIN'
+
+/** PAUSED accounts (the default for new ones) cannot log in. */
+export type AccountStatus = 'ACTIVE' | 'PAUSED'
+
+export interface User {
+  id: number
+  email: string
+  name: string
+  role: Role
+  status: AccountStatus
+  /** False until the user sets a password through the activation link. */
+  hasPassword: boolean
+  /** Expiry (ISO datetime) of the outstanding activation link, `null` when there is none. */
+  activationExpiresAt: string | null
+  createdAt: string
+  lastLoginAt: string | null
+}
+
+export interface UserCollection {
+  items: User[]
+  total: number
+  limit: number
+  offset: number
+}
+
+/** What the activation page shows before the password is chosen. */
+export interface ActivationInfo {
+  email: string
+  name: string
+  expiresAt: string
+}
+
+export interface SystemSettings {
+  /** How long activation links stay valid (applies to links issued from now on). */
+  activationLinkTtlHours: number
+}
+
 // -- write models --------------------------------------------------------------------
 
 export interface InvoiceLineInput {
@@ -113,4 +154,21 @@ export interface SubjectInput {
   fullName: string
   document?: Partial<IdentificationDocument>
   address?: Partial<Address>
+}
+
+export interface LoginInput {
+  email: string
+  password: string
+}
+
+export interface UserInput {
+  email: string
+  name?: string
+  /** Defaults to ADMIN on the server. */
+  role?: Role
+}
+
+export interface PasswordChangeInput {
+  currentPassword: string
+  newPassword: string
 }

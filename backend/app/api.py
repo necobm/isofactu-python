@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter
 
+from app.accounts.router import admin_router, auth_router
 from app.core.config import Settings, get_settings
 from app.invoicing.router import invoice_router, subject_router
 from app.invoicing.schemas import HealthStatus
@@ -15,5 +16,7 @@ async def health() -> HealthStatus:
     return HealthStatus(status="ok", app=settings.app_name, version=settings.app_version)
 
 
+api_router.include_router(auth_router)
+api_router.include_router(admin_router)
 api_router.include_router(invoice_router)
 api_router.include_router(subject_router)

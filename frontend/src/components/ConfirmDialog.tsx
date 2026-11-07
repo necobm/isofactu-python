@@ -4,7 +4,11 @@ interface ConfirmDialogProps {
   title: string
   message: string
   confirmLabel: string
+  /** Label of the confirm button while `busy`; defaults to `confirmLabel`. */
+  busyLabel?: string
   cancelLabel?: string
+  /** `danger` paints the confirm button red (destructive actions). */
+  tone?: 'primary' | 'danger'
   busy?: boolean
   onConfirm: () => void
   onCancel: () => void
@@ -15,7 +19,9 @@ export default function ConfirmDialog({
   title,
   message,
   confirmLabel,
+  busyLabel = confirmLabel,
   cancelLabel = 'Cancelar',
+  tone = 'primary',
   busy = false,
   onConfirm,
   onCancel,
@@ -55,9 +61,11 @@ export default function ConfirmDialog({
             ref={confirmRef}
             onClick={onConfirm}
             disabled={busy}
-            className="text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className={`text-sm font-medium text-white px-4 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+              tone === 'danger' ? 'bg-rose-600 hover:bg-rose-700' : 'bg-indigo-600 hover:bg-indigo-700'
+            }`}
           >
-            {busy ? 'Emitiendo…' : confirmLabel}
+            {busy ? busyLabel : confirmLabel}
           </button>
         </div>
       </div>

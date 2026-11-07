@@ -20,6 +20,10 @@ The core of **issued invoices** works end to end (API + UI):
 - [x] Pick the invoice's client from stored subjects (search by name or NIF/CIF).
 - [x] Invoice list filtered by state, with detail view.
 - [x] Docker-based dev workflow, migrations, fixtures and API test suite.
+- [x] **Accounts and authentication** — e-mail + password login (no self-registration), two
+      roles (`SUPER_ADMIN` manages accounts, `ADMIN` is a tenant with its own data), account
+      activation by e-mail link, pause / activate / delete accounts, per-tenant data isolation.
+      See [Accounts & authentication](#accounts--authentication).
 
 Partially there, with known gaps:
 
@@ -53,8 +57,8 @@ Partially there, with known gaps:
 ### Later: beyond the MVP
 
 - Expense control and forecasting (expense trends, upcoming tax payments).
-- Multi-tenant SaaS: user accounts, authentication and per-company data isolation (today the app
-  is single-tenant).
+- Account hardening: login rate limiting, self-service password reset, audit log of the
+  SUPER_ADMIN actions.
 
 ## Stack
 
@@ -65,6 +69,8 @@ Partially there, with known gaps:
 | Frontend   | React 19 + TypeScript, Vite 5, Tailwind CSS 3           |
 | Charts     | Recharts                                                |
 | Database   | PostgreSQL 17 (Docker)                                  |
+| Auth       | bcrypt password hashes, signed HttpOnly session cookie (PyJWT) |
+| E-mail     | SMTP (stdlib) — Mailpit in development                  |
 | Runtime    | Docker Compose                                          |
 
 The backend exposes a JSON API under `/api` (OpenAPI contract at `/api/docs`) and serves the
@@ -80,16 +86,21 @@ Node, pytest, ruff, eslint, Alembic… all run inside the containers.
 docker compose up --build          # or: make up
 ```
 
-This starts three things:
+This starts four things:
 
 1. `db` — PostgreSQL 17 (exposed on `127.0.0.1:5433`).
-2. `frontend-build` — one-shot Node container that compiles the React app into `./public` and exits.
-3. `backend` — FastAPI server: applies Alembic migrations, then serves the API **and** the SPA.
+2. `mailpit` — catches every e-mail the app sends (activation links). Web UI on http://localhost:8025.
+3. `frontend-build` — one-shot Node container that compiles the React app into `./public` and exits.
+4. `backend` — FastAPI server: applies Alembic migrations, creates the first `SUPER_ADMIN`
+   account, then serves the API **and** the SPA.
 
 Open http://localhost:8000 for the app and http://localhost:8000/api/docs for the API documentation.
 
-To populate the database with generated fixtures: `LOAD_FIXTURES=1 docker compose up --build`
-(see [Fixtures](#fixtures)).
+Log in with the `SUPER_ADMIN` account from `.env` (`admin@isofactu.local` / `admin1234` by default)
+to reach the account management panel, create an `ADMIN` account (a tenant) and pick up its
+activation link in Mailpit. Or populate the database with generated fixtures —
+`LOAD_FIXTURES=1 docker compose up --build` — which also creates a demo tenant you can log in as
+(`demo@isofactu.local` / `demo1234`, see [Fixtures](#fixtures)).
 
 ## Development workflow
 
@@ -114,30 +125,55 @@ If you prefer a local virtualenv, the root `.env` already points `DATABASE_URL` 
 database:
 
 ```bash
-docker compose up -d db
+docker compose up -d db mailpit
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 alembic upgrade head
+python -m app.cli users create-super-admin --email admin@isofactu.local   # prompts for a password
 uvicorn app.main:app --reload       # http://localhost:8000
 ```
+
+The root `.env` points `SMTP_HOST` at the Mailpit container's published port. With `SMTP_HOST`
+empty, outgoing e-mails are written to the backend log instead (activation links included).
 
 Likewise `cd frontend && npm install && npm run dev` runs the Vite dev server on the host.
 </details>
 
 ## API
 
-| Method | Path                        | Description                                    |
-|--------|-----------------------------|------------------------------------------------|
-| GET    | `/api/health`               | Health check (`200 {"status": "ok", ...}`)     |
-| GET    | `/api/docs`                 | Swagger UI (`/api/redoc`, `/api/openapi.json`) |
-| GET    | `/api/invoice`              | Collection of invoices (`?state=&limit=&offset=`) |
-| GET    | `/api/invoice/{id}`         | Invoice detail                                 |
-| POST   | `/api/invoice`              | Create an invoice (draft or issued) with its lines |
-| PUT    | `/api/invoice/{id}`         | Replace a draft invoice, or issue it           |
-| GET    | `/api/subject`              | Collection of subjects (`?q=&limit=&offset=`)  |
-| GET    | `/api/subject/{id}`         | Subject detail                                 |
-| POST   | `/api/subject`              | Create a subject                               |
+Everything except the health check, the docs, the login and the activation endpoints requires a
+session (see [Accounts & authentication](#accounts--authentication)). Invoicing endpoints need an
+`ADMIN` (tenant) session and only ever return that tenant's data; `/api/admin/*` needs a
+`SUPER_ADMIN` session.
+
+| Method | Path                                    | Who          | Description                                    |
+|--------|-----------------------------------------|--------------|------------------------------------------------|
+| GET    | `/api/health`                           | public       | Health check (`200 {"status": "ok", ...}`)     |
+| GET    | `/api/docs`                             | public       | Swagger UI (`/api/redoc`, `/api/openapi.json`) |
+| POST   | `/api/auth/login`                       | public       | `{email, password}` → user + session cookie (`401` bad credentials, `403` paused) |
+| POST   | `/api/auth/logout`                      | session      | Clears the session cookie                      |
+| GET    | `/api/auth/me`                          | session      | The logged-in user                             |
+| POST   | `/api/auth/password`                    | session      | `{currentPassword, newPassword}` → change own password (`400` if the current one is wrong) |
+| GET    | `/api/auth/activate/{token}`            | public       | Who an activation link is for (`404` if unknown, used or expired) |
+| POST   | `/api/auth/activate/{token}`            | public       | `{password}` → sets the password, activates the account, consumes the link |
+| GET    | `/api/admin/user`                       | SUPER_ADMIN  | Collection of accounts (`?limit=&offset=`)     |
+| POST   | `/api/admin/user`                       | SUPER_ADMIN  | Create a (paused) account and e-mail its activation link |
+| GET    | `/api/admin/user/{id}`                  | SUPER_ADMIN  | Account detail                                 |
+| PUT    | `/api/admin/user/{id}`                  | SUPER_ADMIN  | Update e-mail, name, role                      |
+| DELETE | `/api/admin/user/{id}`                  | SUPER_ADMIN  | Delete the account **and everything it owns**  |
+| POST   | `/api/admin/user/{id}/pause`            | SUPER_ADMIN  | Pause (cannot log in; pending link revoked)    |
+| POST   | `/api/admin/user/{id}/activate`         | SUPER_ADMIN  | Activate manually                              |
+| POST   | `/api/admin/user/{id}/send-activation`  | SUPER_ADMIN  | (Re)send the activation link                   |
+| GET    | `/api/admin/settings`                   | SUPER_ADMIN  | System settings (`{"activationLinkTtlHours": 24}`) |
+| PUT    | `/api/admin/settings`                   | SUPER_ADMIN  | Update system settings                         |
+| GET    | `/api/invoice`                          | ADMIN        | Collection of invoices (`?state=&limit=&offset=`) |
+| GET    | `/api/invoice/{id}`                     | ADMIN        | Invoice detail                                 |
+| POST   | `/api/invoice`                          | ADMIN        | Create an invoice (draft or issued) with its lines |
+| PUT    | `/api/invoice/{id}`                     | ADMIN        | Replace a draft invoice, or issue it           |
+| GET    | `/api/subject`                          | ADMIN        | Collection of subjects (`?q=&limit=&offset=`)  |
+| GET    | `/api/subject/{id}`                     | ADMIN        | Subject detail                                 |
+| POST   | `/api/subject`                          | ADMIN        | Create a subject                               |
 
 Example — `GET /api/invoice`:
 
@@ -193,19 +229,93 @@ Conventions:
   computes them with `Decimal`, so nothing is lost in arithmetic. Inputs also accept numeric strings.
 - Line amounts use scale 2 with **half-up rounding** (`99.99 × 21 % = 20.9979 → 21.00`).
 
+## Accounts & authentication
+
+There is no self-registration: accounts are created by a `SUPER_ADMIN` from the admin panel.
+
+**Roles**
+
+- `SUPER_ADMIN` — manages the accounts of the system (create, edit, pause / activate, delete,
+  re-send activation links) and the system settings. Has **no** invoicing data and cannot see
+  anybody's invoices: the invoicing endpoints answer `403`.
+- `ADMIN` — a tenant. Owns its subjects and invoices; never sees other tenants' data (foreign
+  ids are simply `404`, and invoice numbers are sequenced per tenant). Cannot reach `/api/admin`.
+
+**Account lifecycle**
+
+1. The `SUPER_ADMIN` creates the account (e-mail, optional name, role). It starts **paused** and
+   without a password, and an e-mail with an activation link is sent right away (if the e-mail
+   cannot be sent, nothing is created and the API answers `503`).
+2. The link opens `/activate/<token>`, where the user chooses a password. Submitting the form
+   sets the password, **activates** the account and **invalidates** the link.
+3. Links expire after 24 hours by default; the `SUPER_ADMIN` can change that in *Ajustes*
+   (1 h – 30 days, applied to links issued from then on) and can re-send a link at any time —
+   which replaces the previous one and also works as a password reset for an active account.
+4. Pausing an account takes effect immediately (its open sessions stop working, login answers
+   `403`) and revokes any pending activation link. Activating manually does not hand out a
+   password: a user without one still has to use a link. A `SUPER_ADMIN` cannot pause, delete
+   or demote their own account.
+5. Deleting an account removes everything it owns (subjects, invoices, lines) through database
+   cascades.
+6. Any logged-in user (either role) changes their own password from the user menu in the top
+   bar (*Cambiar contraseña*), which asks for the current one. A forgotten password is recovered
+   by a `SUPER_ADMIN` re-sending the activation link (or, for a `SUPER_ADMIN` locked out, with
+   the CLI: `make super-admin` creates a fresh account).
+
+**Sessions.** `POST /api/auth/login` sets an `HttpOnly`, `SameSite=Lax` cookie holding a signed
+token (HS256, `SECRET_KEY`); `SESSION_TTL_HOURS` is its lifetime (7 days by default) and the
+`Secure` flag is on when `APP_ENV=prod`. The user is loaded from the database on every request, so
+pausing or deleting an account is effective at once. Passwords are stored as bcrypt hashes
+(`PASSWORD_HASH_ROUNDS`, 12 by default) and must be 8–72 characters; login answers the same `401`
+for unknown e-mails and wrong passwords (and takes the same time). CSRF is covered by the
+`SameSite=Lax` cookie together with a JSON-only API and an explicit CORS allow-list.
+
+**First SUPER_ADMIN.** The backend container creates it on start-up from `SUPER_ADMIN_EMAIL` /
+`SUPER_ADMIN_PASSWORD` (`.env`) when the e-mail does not exist yet — change those values, or leave
+them empty and use the CLI instead:
+
+```bash
+make super-admin EMAIL=admin@example.com        # prompts for the password
+docker compose exec backend python -m app.cli users create-super-admin --email admin@example.com
+```
+
+**E-mail.** The backend container always talks to the `mailpit` service (host and port are fixed
+in `compose.yaml`, like the database URL); `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_STARTTLS` and
+`MAIL_FROM` come from `.env`, and links are built from `APP_PUBLIC_URL`. Open http://localhost:8025
+to read the activation e-mails. The `SMTP_HOST` / `SMTP_PORT` in `.env` only apply to a backend
+running on the host; with `SMTP_HOST` empty, e-mails are written to the log instead of being
+sent. For production, point the backend at a real relay through a compose override or the
+environment.
+
+**Migrating existing data.** Subjects and invoices created before accounts existed have no owner.
+Migration `0005` hands them to a paused placeholder tenant, `legacy@isofactu.local`, so nothing is
+lost: a `SUPER_ADMIN` can rename it, send it an activation link, or delete it (together with the
+legacy data) from the panel. Fresh databases do not get that account.
+
 ## Project structure
 
 ```
 isofactu/
-├── compose.yaml               # Docker Compose: db, backend, frontend-build, frontend (dev profile)
-├── .env                       # Shared defaults (Postgres credentials, ports, DATABASE_URL)
+├── compose.yaml               # Docker Compose: db, mailpit, backend, frontend-build, frontend (dev profile)
+├── .env                       # Shared defaults (Postgres, ports, SECRET_KEY, SMTP, first SUPER_ADMIN)
 ├── backend/
 │   ├── app/
 │   │   ├── main.py            # FastAPI app factory (/api/docs, CORS, SPA mount)
 │   │   ├── api.py             # /api router (+ /api/health)
 │   │   ├── spa.py             # Serves ./public with history-API fallback
-│   │   ├── core/              # Settings, async engine / session, declarative base
-│   │   ├── invoicing/         # Invoicing module
+│   │   ├── core/              # Settings, async engine / session, declarative base, mailer, ApiModel
+│   │   ├── accounts/          # Accounts module
+│   │   │   ├── models.py      #   User, ActivationToken, AppSetting
+│   │   │   ├── role.py        #   SUPER_ADMIN | ADMIN
+│   │   │   ├── account_status.py # ACTIVE | PAUSED
+│   │   │   ├── security.py    #   bcrypt hashing, session tokens, activation tokens
+│   │   │   ├── service.py     #   Create / activate / pause accounts, send links, authenticate
+│   │   │   ├── deps.py        #   Current user + role guards (CurrentTenant, CurrentSuperAdmin)
+│   │   │   ├── emails.py      #   Activation e-mail (text + HTML)
+│   │   │   ├── schemas.py     #   Pydantic models = API contract
+│   │   │   ├── repository.py  #   Data access (users, system settings)
+│   │   │   └── router.py      #   /api/auth, /api/admin
+│   │   ├── invoicing/         # Invoicing module (every row belongs to a tenant)
 │   │   │   ├── models.py      #   Subject, Invoice, InvoiceLine (SQLAlchemy)
 │   │   │   ├── value_objects.py  # InvoiceNumber, IdentificationDocument, Address (composites)
 │   │   │   ├── document_type.py  # CIF | NIF | OTHER
@@ -213,26 +323,30 @@ isofactu/
 │   │   │   ├── payment_method.py # TRANSFER | CASH | CARD | DIRECT_DEBIT
 │   │   │   ├── money.py       #   bcmath-compatible decimal helpers
 │   │   │   ├── schemas.py     #   Pydantic models = API contract
-│   │   │   ├── repository.py  #   Data access
+│   │   │   ├── repository.py  #   Data access, scoped to one tenant
 │   │   │   └── router.py      #   /api/invoice, /api/subject
 │   │   ├── fixtures/          # factory_boy factories + loader (shared by tests and CLI)
-│   │   └── cli.py             # Management commands (`python -m app.cli fixtures load`)
+│   │   └── cli.py             # Management commands (`users create-super-admin`, `fixtures load`)
 │   ├── alembic/               # Migrations (`alembic revision --autogenerate -m "..."`)
 │   ├── tests/                 # pytest (unit + API integration against PostgreSQL)
 │   ├── Dockerfile
 │   └── pyproject.toml
 ├── frontend/
 │   ├── src/
-│   │   ├── api/               # Typed API client + contract types
-│   │   ├── pages/             # Dashboard, Invoices, CreateInvoice
-│   │   ├── components/        # TopNav, dashboard widgets, invoice form, invoice table
-│   │   └── lib/               # Formatting helpers, useApi hook
+│   │   ├── App.tsx            # Auth gate + /activate/<token> route; picks the shell by role
+│   │   ├── TenantApp.tsx      # ADMIN shell: dashboard, invoices...
+│   │   ├── AdminApp.tsx       # SUPER_ADMIN shell: accounts, settings
+│   │   ├── api/               # Typed API client (api, auth, admin) + contract types
+│   │   ├── pages/             # Login, ActivateAccount, Dashboard, Invoices, InvoiceForm, admin/
+│   │   ├── components/        # TopNav, forms, dashboard widgets, invoice form / table, admin/
+│   │   └── lib/               # AuthProvider + useAuth, tiny router, formatting, useApi hook
 │   └── vite.config.ts         # Builds to ../public, proxies /api in dev
 └── public/                    # Built frontend assets (generated, git-ignored)
 ```
 
 ## Key concepts
 
+- **User / account** — someone who can log in. `ADMIN` users are tenants: every subject and invoice has one as `owner`. `SUPER_ADMIN` users only manage accounts.
 - **Subject** — a company or person identified by NIF/CIF that acts as issuer or recipient on an invoice.
 - **Invoice** — links an issuer and a recipient, has a date, an invoice number, a state (`DRAFT` → `ISSUED`) and an optional IRPF retention rate, and contains one or more lines.
 - **InvoiceLine** — a concept with description, quantity, unit price and VAT rate. Amounts are computed with fixed-point decimals.
@@ -245,12 +359,13 @@ in `backend/app/fixtures/factories.py` (with Faker's `es_ES` locale: valid NIF/C
 names and addresses) and consumed from two places:
 
 **1. Manually, through the management CLI** (inside the backend container) — to fill a
-development database:
+development database. Everything generated belongs to a demo tenant, `demo@isofactu.local`
+(password `demo1234`), created on first use so that you can log in and browse the data:
 
 ```bash
 make fixtures                                   # purge + 1 issuer, 6 clients, 20 invoices, seed 42
 make fixtures ARGS="--invoices 50 --clients 10" # same, with options
-make fixtures-purge                             # remove all invoicing data
+make fixtures-purge                             # remove all invoicing data (accounts are kept)
 
 # the underlying commands
 docker compose exec backend python -m app.cli fixtures load --invoices 50 --seed 42 --purge
@@ -266,12 +381,12 @@ LOAD_FIXTURES=1 docker compose up               # or: load on container start (F
 **2. In tests, as pytest fixtures** (`backend/tests/conftest.py`):
 
 ```python
-async def test_something(client, invoice_factory, subject):
-    invoice_factory.create_batch(3, recipient=subject, lines=1)   # added to the test session
-    response = await client.get("/api/invoice")
+async def test_something(tenant_client, invoice_factory, tenant, subject):
+    invoice_factory.create_batch(3, owner=tenant, recipient=subject, lines=1)   # added to the session
+    response = await tenant_client.get("/api/invoice")       # logged in as `tenant`
     assert response.json()["total"] == 3
 
-async def test_other(invoice):            # a persisted invoice with issuer, recipient and lines
+async def test_other(invoice):            # a persisted invoice (owned by `tenant`) with lines
     assert invoice.total > 0
 
 def test_pure():                          # no database needed
@@ -280,9 +395,15 @@ def test_pure():                          # no database needed
 
 | Fixture                                                      | Provides                                   |
 |--------------------------------------------------------------|--------------------------------------------|
-| `subject_factory`, `invoice_factory`, `invoice_line_factory` | Factory classes bound to the test session  |
-| `subject`, `invoice`                                         | One persisted instance                     |
-| `session`, `client`                                          | Async SQLAlchemy session / HTTP test client|
+| `subject_factory`, `invoice_factory`, `invoice_line_factory`, `user_factory` | Factory classes bound to the test session |
+| `tenant`, `other_tenant`, `super_admin`                      | Persisted, active accounts (password `PASSWORD`) |
+| `subject`, `invoice`                                         | One persisted instance, owned by `tenant`  |
+| `session`, `client`                                          | Async SQLAlchemy session / anonymous HTTP test client |
+| `tenant_client`, `super_admin_client`                        | HTTP test clients already logged in        |
+| `mailer`                                                     | `InMemoryMailer`: e-mails sent during the test (`mailer.outbox`) |
+
+`InvoiceFactory()` gives the invoice and its generated parties the same (generated) owner; pass
+`owner=tenant` to pin it. The bcrypt work factor is lowered to 4 rounds in the test-suite.
 
 Factories only `session.add()` — they never flush or commit on their own, so they behave the same
 with the async session used by the app. Adding a new entity means adding one factory class; both

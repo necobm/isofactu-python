@@ -34,20 +34,32 @@ def _test_database_url() -> str:
 os.environ["DATABASE_URL"] = _test_database_url()
 os.environ.setdefault("APP_ENV", "test")
 os.environ.setdefault("PUBLIC_DIR", str(BACKEND_DIR / "tests" / "_no_public"))
+os.environ["PASSWORD_HASH_ROUNDS"] = "4"  # bcrypt at full strength would dominate the run time
+os.environ["SMTP_HOST"] = ""  # never talk to a real mail server (the mailer is overridden anyway)
+os.environ["APP_PUBLIC_URL"] = "http://test"
 
+from app.accounts.models import User  # noqa: E402
+from app.accounts.role import Role  # noqa: E402
+from app.accounts.security import hash_password  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
 from app.core.database import get_session  # noqa: E402
+from app.core.mail import InMemoryMailer, get_mailer  # noqa: E402
 from app.fixtures import (  # noqa: E402
     InvoiceFactory,
     InvoiceLineFactory,
     SubjectFactory,
+    UserFactory,
     bind_session,
     reseed,
 )
 from app.invoicing.models import Invoice, Subject  # noqa: E402
 from app.main import create_app  # noqa: E402
 
-TABLES = ("invoice_line", "invoice", "subject")
+TABLES = ("invoice_line", "invoice", "subject", "activation_token", "app_setting", "user_account")
+
+# Password of every account created by the `tenant` / `super_admin` fixtures and `login()`.
+PASSWORD = "correct-horse-battery"
+PASSWORD_HASH = hash_password(PASSWORD, rounds=4)
 
 
 def _ensure_database_exists(url: str) -> None:
@@ -92,17 +104,58 @@ async def session(engine) -> AsyncIterator[AsyncSession]:
         yield session
 
 
-@pytest_asyncio.fixture
-async def client(session: AsyncSession):
-    from httpx import ASGITransport, AsyncClient
+@pytest.fixture
+def mailer() -> InMemoryMailer:
+    """Captures the e-mails the application sends during the test (`mailer.outbox`)."""
+    return InMemoryMailer()
 
+
+@pytest.fixture
+def app(session: AsyncSession, mailer: InMemoryMailer):
     app = create_app()
 
     async def _override_session() -> AsyncIterator[AsyncSession]:
         yield session
 
     app.dependency_overrides[get_session] = _override_session
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    app.dependency_overrides[get_mailer] = lambda: mailer
+    return app
+
+
+def _make_client(app):
+    from httpx import ASGITransport, AsyncClient
+
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+
+@pytest_asyncio.fixture
+async def client(app):
+    """Anonymous HTTP client (no session cookie)."""
+    async with _make_client(app) as client:
+        yield client
+
+
+async def login(client, user: User, password: str = PASSWORD) -> None:
+    """Log `client` in as `user` (the session cookie is kept by the client)."""
+    response = await client.post(
+        "/api/auth/login", json={"email": user.email, "password": password}
+    )
+    assert response.status_code == 200, response.text
+
+
+@pytest_asyncio.fixture
+async def tenant_client(app, tenant: User):
+    """HTTP client logged in as the `tenant` fixture (an ADMIN)."""
+    async with _make_client(app) as client:
+        await login(client, tenant)
+        yield client
+
+
+@pytest_asyncio.fixture
+async def super_admin_client(app, super_admin: User):
+    """HTTP client logged in as the `super_admin` fixture."""
+    async with _make_client(app) as client:
+        await login(client, super_admin)
         yield client
 
 
@@ -134,17 +187,52 @@ def invoice_line_factory(factories: None) -> type[InvoiceLineFactory]:
     return InvoiceLineFactory
 
 
+@pytest.fixture
+def user_factory(factories: None) -> type[UserFactory]:
+    return UserFactory
+
+
 @pytest_asyncio.fixture
-async def subject(subject_factory: type[SubjectFactory], session: AsyncSession) -> Subject:
-    """A persisted subject."""
-    subject = subject_factory()
+async def tenant(user_factory: type[UserFactory], session: AsyncSession) -> User:
+    """A persisted, active ADMIN able to log in with `PASSWORD`."""
+    user = user_factory(email="tenant@example.com", name="Tenant", password_hash=PASSWORD_HASH)
+    await session.flush()
+    return user
+
+
+@pytest_asyncio.fixture
+async def other_tenant(user_factory: type[UserFactory], session: AsyncSession) -> User:
+    """A second ADMIN, to check that tenants cannot see each other's data."""
+    user = user_factory(email="other@example.com", name="Other", password_hash=PASSWORD_HASH)
+    await session.flush()
+    return user
+
+
+@pytest_asyncio.fixture
+async def super_admin(user_factory: type[UserFactory], session: AsyncSession) -> User:
+    """A persisted, active SUPER_ADMIN able to log in with `PASSWORD`."""
+    user = user_factory(
+        email="root@example.com", name="Root", role=Role.SUPER_ADMIN, password_hash=PASSWORD_HASH
+    )
+    await session.flush()
+    return user
+
+
+@pytest_asyncio.fixture
+async def subject(
+    subject_factory: type[SubjectFactory], tenant: User, session: AsyncSession
+) -> Subject:
+    """A persisted subject owned by `tenant`."""
+    subject = subject_factory(owner=tenant)
     await session.flush()
     return subject
 
 
 @pytest_asyncio.fixture
-async def invoice(invoice_factory: type[InvoiceFactory], session: AsyncSession) -> Invoice:
-    """A persisted invoice with issuer, recipient and lines."""
-    invoice = invoice_factory()
+async def invoice(
+    invoice_factory: type[InvoiceFactory], tenant: User, session: AsyncSession
+) -> Invoice:
+    """A persisted invoice (issuer, recipient and lines included) owned by `tenant`."""
+    invoice = invoice_factory(owner=tenant)
     await session.flush()
     return invoice

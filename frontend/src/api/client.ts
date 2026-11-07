@@ -21,6 +21,19 @@ interface RequestOptions {
   signal?: AbortSignal
 }
 
+type UnauthorizedListener = () => void
+const unauthorizedListeners = new Set<UnauthorizedListener>()
+
+/**
+ * Registers a callback run whenever the API answers `401` (no / expired session, paused
+ * account...). The auth provider uses it to drop the current user and show the login page.
+ * Returns the function that unregisters the listener.
+ */
+export function onUnauthorized(listener: UnauthorizedListener): () => void {
+  unauthorizedListeners.add(listener)
+  return () => unauthorizedListeners.delete(listener)
+}
+
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const url = new URL(`${BASE_URL}${path}`, window.location.origin)
   for (const [key, value] of Object.entries(options.query ?? {}) as [string, unknown][]) {
@@ -35,13 +48,18 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     },
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
     signal: options.signal,
+    // The session travels in an HttpOnly cookie (also when the API lives on another origin)
+    credentials: 'include',
   })
+
+  if (response.status === 204) return undefined as T
 
   const isJson = response.headers.get('content-type')?.includes('application/json')
   const payload = isJson ? await response.json() : await response.text()
 
   if (!response.ok) {
     const detail = isJson && payload && typeof payload === 'object' ? payload.detail : payload
+    if (response.status === 401) unauthorizedListeners.forEach((listener) => listener())
     throw new ApiError(response.status, detail, describeError(response.status, detail))
   }
   return payload as T

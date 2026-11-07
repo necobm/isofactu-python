@@ -8,11 +8,21 @@ from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.fixtures import InvoiceFactory, SubjectFactory, load_fixtures, purge_fixtures, reseed
+from app.accounts.models import User
+from app.fixtures import (
+    DEMO_TENANT_EMAIL,
+    DEMO_TENANT_PASSWORD,
+    InvoiceFactory,
+    SubjectFactory,
+    load_fixtures,
+    purge_fixtures,
+    reseed,
+)
 from app.fixtures.factories import NIF_CONTROL, spanish_cif, spanish_nif
 from app.invoicing.document_type import DocumentType
 from app.invoicing.invoice_state import InvoiceState
 from app.invoicing.models import Invoice, InvoiceLine, Subject
+from tests.conftest import login
 
 
 def test_spanish_identifiers_are_well_formed() -> None:
@@ -35,6 +45,8 @@ def test_build_does_not_need_a_session() -> None:
     assert all(line.description for line in invoice.lines)
     assert invoice.subtotal > 0
     assert invoice.issuer is not invoice.recipient
+    # The invoice and its parties belong to the same (generated) tenant
+    assert invoice.owner is invoice.issuer.owner is invoice.recipient.owner
     lines_total = sum((line.total for line in invoice.lines), Decimal("0.00"))
     assert invoice.total == lines_total - invoice.retention_amount
     assert all(line.invoice is invoice for line in invoice.lines)
@@ -77,19 +89,26 @@ def test_invoice_factory_generates_both_states() -> None:
     assert not InvoiceFactory.build(lines=1, state=InvoiceState.DRAFT).invoice_number.is_assigned
 
 
-async def test_invoice_fixture_is_persisted(invoice: Invoice, session: AsyncSession) -> None:
+async def test_invoice_fixture_is_persisted(
+    invoice: Invoice, tenant: User, session: AsyncSession
+) -> None:
     assert invoice.id is not None
+    assert invoice.owner_id == tenant.id
     assert invoice.lines and all(line.id is not None for line in invoice.lines)
     assert await session.scalar(select(func.count()).select_from(Subject)) == 2
 
 
 async def test_factories_feed_the_api(
-    client: AsyncClient, invoice_factory: type[InvoiceFactory], subject: Subject
+    tenant_client: AsyncClient,
+    invoice_factory: type[InvoiceFactory],
+    tenant: User,
+    subject: Subject,
 ) -> None:
-    invoice_factory.create_batch(3, recipient=subject, lines=1)
-    invoice_factory(lines=2)  # pending objects are flushed by the API query
+    invoice_factory.create_batch(3, owner=tenant, recipient=subject, lines=1)
+    invoice_factory(owner=tenant, lines=2)  # pending objects are flushed by the API query
+    invoice_factory(lines=1)  # belongs to a generated tenant: invisible to `tenant`
 
-    response = await client.get("/api/invoice")
+    response = await tenant_client.get("/api/invoice")
     body = response.json()
     assert response.status_code == 200
     assert body["total"] == 4
@@ -97,17 +116,32 @@ async def test_factories_feed_the_api(
     assert {item["recipient"]["id"] for item in body["items"]} >= {subject.id}
 
 
-async def test_load_fixtures_and_purge(session: AsyncSession) -> None:
-    report = await load_fixtures(session, issuers=2, clients=3, invoices=7, seed=5)
+async def test_load_fixtures_and_purge(session: AsyncSession, client: AsyncClient) -> None:
+    report = await load_fixtures(
+        session, issuers=2, clients=3, invoices=7, seed=5, password_hash_rounds=4
+    )
     assert (report.subjects, report.invoices) == (5, 7)
     assert report.lines >= 7
+    assert report.owner == DEMO_TENANT_EMAIL
 
     issuers = await session.scalars(select(Invoice.issuer_id).distinct())
     assert len(list(issuers)) == 2
 
-    report = await load_fixtures(session, invoices=2, clients=1, seed=5, purge=True)
+    # Everything belongs to the demo tenant, which can log in with the documented password
+    owners = await session.scalars(select(Invoice.owner_id).distinct())
+    demo = await session.scalar(select(User).where(User.email == DEMO_TENANT_EMAIL))
+    assert demo is not None and list(owners) == [demo.id]
+    await login(client, demo, DEMO_TENANT_PASSWORD)
+    assert (await client.get("/api/invoice")).json()["total"] == 7
+
+    # Loading again reuses the account and only replaces the invoicing data
+    report = await load_fixtures(
+        session, invoices=2, clients=1, seed=5, purge=True, password_hash_rounds=4
+    )
     assert (report.subjects, report.invoices) == (2, 2)
+    assert await session.scalar(select(func.count()).select_from(User)) == 1
 
     await purge_fixtures(session)
     assert await session.scalar(select(func.count()).select_from(InvoiceLine)) == 0
     assert await session.scalar(select(func.count()).select_from(Subject)) == 0
+    assert await session.scalar(select(func.count()).select_from(User)) == 1  # accounts stay

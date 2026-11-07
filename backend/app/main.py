@@ -1,5 +1,6 @@
 """FastAPI application factory."""
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -19,6 +20,10 @@ Invoice management API for freelancers and SMEs with a Spanish tax context
 * **Invoices** — link an issuer and a recipient, have a date and a number and contain lines.
 
 Monetary amounts are JSON numbers with at most two decimals (`120.98`).
+
+Authentication uses a session cookie obtained from `POST /api/auth/login`. Each `ADMIN`
+user is a tenant and only sees its own subjects and invoices; `SUPER_ADMIN` users manage
+the accounts under `/api/admin` and have no invoicing data.
 """
 
 
@@ -28,8 +33,20 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await dispose_engine()
 
 
+def configure_logging(settings: Settings) -> None:
+    """Uvicorn only configures its own loggers: give `app.*` a handler and a level so
+    that, e.g., e-mails written to the log (no SMTP server) actually show up."""
+    logger = logging.getLogger("app")
+    logger.setLevel(settings.log_level.upper())
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s:     %(name)s: %(message)s"))
+        logger.addHandler(handler)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+    configure_logging(settings)
 
     app = FastAPI(
         title=settings.app_name,
@@ -46,6 +63,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=settings.cors_origin_list,
+            allow_credentials=True,  # the session cookie
             allow_methods=["*"],
             allow_headers=["*"],
         )

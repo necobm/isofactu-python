@@ -351,6 +351,7 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved }: InvoiceFormP
           title="Finalizar factura"
           message={ISSUE_CONFIRMATION}
           confirmLabel="Emitir Factura"
+          busyLabel="Emitiendo…"
           busy={saving === 'ISSUED'}
           onConfirm={() => save('ISSUED')}
           onCancel={() => setConfirmingIssue(false)}

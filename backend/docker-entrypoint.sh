@@ -7,6 +7,11 @@ if [ "${RUN_MIGRATIONS:-1}" = "1" ]; then
     alembic upgrade head
 fi
 
+if [ -n "${SUPER_ADMIN_EMAIL:-}" ] && [ -n "${SUPER_ADMIN_PASSWORD:-}" ]; then
+    echo ">> Ensuring the SUPER_ADMIN account ${SUPER_ADMIN_EMAIL} exists"
+    python -m app.cli users create-super-admin --email "$SUPER_ADMIN_EMAIL" --if-missing
+fi
+
 if [ "${LOAD_FIXTURES:-0}" = "1" ]; then
     echo ">> Loading fixtures (${FIXTURES_INVOICES:-20} invoices, seed ${FIXTURES_SEED:-42})"
     python -m app.cli fixtures load --purge --yes \

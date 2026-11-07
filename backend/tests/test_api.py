@@ -1,14 +1,23 @@
-"""Integration tests for the HTTP API (real PostgreSQL test database)."""
+"""Integration tests for the invoicing HTTP API (real PostgreSQL test database)."""
 
 from datetime import date, timedelta
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.accounts.models import User
 from app.fixtures import InvoiceFactory
 from app.invoicing.invoice_state import InvoiceState
 from app.invoicing.models import Subject
 from app.invoicing.value_objects import InvoiceNumber
+
+
+@pytest.fixture
+def client(tenant_client: AsyncClient) -> AsyncClient:
+    """Every invoicing endpoint needs a logged-in tenant: in this module `client` is one."""
+    return tenant_client
+
 
 ISSUER = {
     "fullName": "Néstor Freelance",
@@ -110,7 +119,7 @@ async def test_create_and_list_invoices(client: AsyncClient) -> None:
 
 
 async def test_invoices_are_ordered_newest_first_and_paginated(
-    client: AsyncClient, invoice_factory: type[InvoiceFactory], subject: Subject
+    client: AsyncClient, invoice_factory: type[InvoiceFactory], tenant: User, subject: Subject
 ) -> None:
     for issued, number in (
         (date(2026, 1, 10), "1"),
@@ -118,6 +127,7 @@ async def test_invoices_are_ordered_newest_first_and_paginated(
         (date(2026, 2, 15), "3"),
     ):
         invoice_factory(
+            owner=tenant,
             issuer=subject,
             recipient=subject,
             issue_date=issued,
@@ -138,6 +148,7 @@ async def test_list_invoices_filtered_by_state(
     client: AsyncClient,
     session: AsyncSession,
     invoice_factory: type[InvoiceFactory],
+    tenant: User,
     subject: Subject,
 ) -> None:
     states = (
@@ -149,7 +160,12 @@ async def test_list_invoices_filtered_by_state(
     )
     invoices = [
         invoice_factory(
-            issuer=subject, recipient=subject, issue_date=date(2026, 1, day), state=state, lines=1
+            owner=tenant,
+            issuer=subject,
+            recipient=subject,
+            issue_date=date(2026, 1, day),
+            state=state,
+            lines=1,
         )
         for day, state in enumerate(states, start=1)
     ]
@@ -421,3 +437,71 @@ async def test_invoice_content_rules_apply_to_drafts_and_issued_alike(client: As
     assert (await client.get(f"/api/invoice/{draft['id']}")).json()["lines"][0]["description"] == (
         "Consultoría"
     )
+
+
+# -- multi-tenancy --------------------------------------------------------------------
+
+
+async def test_tenants_only_see_their_own_data(
+    client: AsyncClient,
+    invoice_factory: type[InvoiceFactory],
+    tenant: User,
+    other_tenant: User,
+    session: AsyncSession,
+) -> None:
+    mine = invoice_factory(owner=tenant, lines=1, state=InvoiceState.DRAFT)
+    theirs = invoice_factory(owner=other_tenant, lines=1, state=InvoiceState.DRAFT)
+    await session.flush()
+
+    # Listing, counting and fetching are all restricted to the logged-in tenant
+    collection = (await client.get("/api/invoice")).json()
+    assert (collection["total"], [i["id"] for i in collection["items"]]) == (1, [mine.id])
+    assert (await client.get(f"/api/invoice/{mine.id}")).status_code == 200
+    assert (await client.get(f"/api/invoice/{theirs.id}")).status_code == 404
+
+    subjects = (await client.get("/api/subject")).json()
+    assert {s["id"] for s in subjects} == {mine.issuer_id, mine.recipient_id}
+    assert (await client.get(f"/api/subject/{theirs.issuer_id}")).status_code == 404
+
+    # Someone else's draft cannot be edited...
+    payload = {"issuerId": mine.issuer_id, "recipientId": mine.recipient_id, "lines": [LINE]}
+    assert (await client.put(f"/api/invoice/{theirs.id}", json=payload)).status_code == 404
+    # ... and someone else's subjects cannot be used on my invoices
+    foreign = await client.post(
+        "/api/invoice",
+        json={"issuerId": mine.issuer_id, "recipientId": theirs.recipient_id, "lines": [LINE]},
+    )
+    assert foreign.status_code == 422
+    assert foreign.json()["detail"][0]["loc"] == ["body", "recipientId"]
+
+
+async def test_invoice_numbers_are_sequenced_per_tenant(
+    client: AsyncClient, invoice_factory: type[InvoiceFactory], other_tenant: User
+) -> None:
+    # The other tenant already issued F-2026-1 and F-2026-2; that must not affect mine.
+    for number in ("1", "2"):
+        invoice_factory(
+            owner=other_tenant,
+            state=InvoiceState.ISSUED,
+            invoice_number=InvoiceNumber("F-2026", number),
+            lines=1,
+        )
+    issuer_id = await _create_subject(client, ISSUER)
+    recipient_id = await _create_subject(client, RECIPIENT)
+    payload = {
+        "issuerId": issuer_id,
+        "recipientId": recipient_id,
+        "state": "ISSUED",
+        "invoiceNumber": {"serial": "F-2026"},
+        "lines": [LINE],
+    }
+    issued = await client.post("/api/invoice", json=payload)
+    assert issued.status_code == 201, issued.text
+    assert issued.json()["invoiceNumber"]["formatted"] == "F-2026-1"
+
+
+async def test_super_admins_have_no_invoicing_data(super_admin_client: AsyncClient) -> None:
+    for path in ("/api/invoice", "/api/subject"):
+        response = await super_admin_client.get(path)
+        assert response.status_code == 403, response.text
+    assert (await super_admin_client.post("/api/subject", json=ISSUER)).status_code == 403

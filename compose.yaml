@@ -20,6 +20,25 @@ services:
     volumes:
       - database_data:/var/lib/postgresql/data:rw
 
+  # Mailpit: catches every e-mail the backend sends in development (account activation
+  # links...). Web UI on http://localhost:8025, SMTP on port 1025 (no auth, no TLS).
+  mailpit:
+    container_name: isofactu-mailpit
+    image: axllent/mailpit:${MAILPIT_VERSION:-v1.27}
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+      MP_MAX_MESSAGES: "500"
+    ports:
+      - "127.0.0.1:${MAILPIT_UI_PORT:-8025}:8025"
+      - "127.0.0.1:${MAILPIT_SMTP_PORT:-1025}:1025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
   # FastAPI backend. Runs Alembic migrations on start-up, then serves the API under /api
   # and the built frontend (./public) as a SPA on the same origin.
   #
@@ -46,6 +65,22 @@ services:
       LOAD_FIXTURES: ${LOAD_FIXTURES:-0}
       FIXTURES_INVOICES: ${FIXTURES_INVOICES:-20}
       FIXTURES_SEED: ${FIXTURES_SEED:-42}
+      # Authentication
+      SECRET_KEY: ${SECRET_KEY:-}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-168}
+      # First SUPER_ADMIN, created on start-up when missing (leave empty to skip)
+      SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:-}
+      SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD:-}
+      # E-mail: delivered to the Mailpit container. Host and port are fixed here on purpose
+      # (as with DATABASE_URL): the SMTP_HOST / SMTP_PORT in .env are for a backend running
+      # on the host and must not leak into the container through variable substitution.
+      APP_PUBLIC_URL: ${APP_PUBLIC_URL:-http://localhost:${BACKEND_PORT:-8000}}
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-false}
+      MAIL_FROM: ${MAIL_FROM:-Isofactu <no-reply@isofactu.local>}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
@@ -53,6 +88,8 @@ services:
       - ./public:/app/public:ro
     depends_on:
       db:
+        condition: service_healthy
+      mailpit:
         condition: service_healthy
       frontend-build:
         condition: service_completed_successfully

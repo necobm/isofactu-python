@@ -1,6 +1,6 @@
 # Every target runs inside the Docker containers: no Python or Node needed on the host.
 .PHONY: help up dev down logs shell test test-backend test-frontend lint lint-backend lint-frontend \
-        build migrate migration fixtures fixtures-purge
+        build migrate migration fixtures fixtures-purge super-admin
 
 COMPOSE  = docker compose
 BACKEND  = $(COMPOSE) exec backend
@@ -53,8 +53,12 @@ migration:       ## Autogenerate a migration from the models -> make migration M
 fixtures:        ## Generate fixture data (purges existing data) -> make fixtures ARGS="--invoices 50"
 	$(BACKEND) python -m app.cli fixtures load --purge --yes --seed 42 $(ARGS)
 
-fixtures-purge:  ## Remove all invoicing data
+fixtures-purge:  ## Remove all invoicing data (accounts are kept)
 	$(BACKEND) python -m app.cli fixtures purge --yes
+
+## Accounts ---------------------------------------------------------------------
+super-admin:     ## Create a SUPER_ADMIN account (prompts for the password) -> make super-admin EMAIL=admin@example.com
+	$(BACKEND) env -u SUPER_ADMIN_PASSWORD python -m app.cli users create-super-admin --email "$(EMAIL)"
 
 ## Frontend ---------------------------------------------------------------------
 build:           ## Rebuild the frontend into ./public

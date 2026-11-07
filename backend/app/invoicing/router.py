@@ -1,10 +1,16 @@
-"""HTTP endpoints of the Invoicing module."""
+"""HTTP endpoints of the Invoicing module.
+
+Every endpoint requires a logged-in ADMIN (the tenant) and only touches that tenant's
+data: the repositories are bound to the current user.
+"""
 
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.accounts.deps import CurrentTenant
+from app.accounts.models import User
 from app.core.database import get_session
 from app.invoicing.invoice_state import InvoiceState
 from app.invoicing.models import Invoice, InvoiceLine, Subject
@@ -48,12 +54,13 @@ subject_router = APIRouter(prefix="/subject", tags=["Subjects"])
     ),
 )
 async def list_invoices(
+    tenant: CurrentTenant,
     session: SessionDep,
     state: StateParam = None,
     limit: LimitParam = 50,
     offset: OffsetParam = 0,
 ) -> InvoiceCollection:
-    repo = InvoiceRepository(session)
+    repo = InvoiceRepository(session, tenant.id)
     items = await repo.find_all(state=state, limit=limit, offset=offset)
     total = await repo.count(state=state)
     return InvoiceCollection(
@@ -65,8 +72,8 @@ async def list_invoices(
 
 
 @invoice_router.get("/{invoice_id}", response_model=InvoiceRead, summary="Get an invoice")
-async def get_invoice(invoice_id: int, session: SessionDep) -> Invoice:
-    invoice = await InvoiceRepository(session).find(invoice_id)
+async def get_invoice(tenant: CurrentTenant, invoice_id: int, session: SessionDep) -> Invoice:
+    invoice = await InvoiceRepository(session, tenant.id).find(invoice_id)
     if invoice is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Invoice not found")
     return invoice
@@ -79,9 +86,12 @@ def _validation_error(field: str, message: str) -> HTTPException:
     )
 
 
-async def _find_parties(payload: InvoiceWrite, session: AsyncSession) -> tuple[Subject, Subject]:
-    """The issuer and recipient referenced by the payload, or a 422 naming the missing one."""
-    subjects = SubjectRepository(session)
+async def _find_parties(
+    payload: InvoiceWrite, session: AsyncSession, tenant: User
+) -> tuple[Subject, Subject]:
+    """The issuer and recipient referenced by the payload, or a 422 naming the missing one.
+    Subjects of other tenants count as missing."""
+    subjects = SubjectRepository(session, tenant.id)
     issuer = await subjects.find(payload.issuer_id)
     recipient = await subjects.find(payload.recipient_id)
     for field, subject in (("issuerId", issuer), ("recipientId", recipient)):
@@ -113,25 +123,15 @@ async def _resolve_number(payload: InvoiceWrite, repo: InvoiceRepository) -> Inv
         "of the given serial is assigned."
     ),
 )
-async def create_invoice(payload: InvoiceCreate, session: SessionDep) -> Invoice:
-    subjects = SubjectRepository(session)
-    issuer = await subjects.find(payload.issuer_id)
-    recipient = await subjects.find(payload.recipient_id)
-    for field, subject in (("issuerId", issuer), ("recipientId", recipient)):
-        if subject is None:
-            raise _validation_error(field, "Subject not found")
-
-    repo = InvoiceRepository(session)
-    if payload.state is InvoiceState.DRAFT:
-        if payload.invoice_number is not None:
-            raise _validation_error("invoiceNumber", "Draft invoices cannot have an invoice number")
-        invoice_number = InvoiceNumber()
-    else:
-        requested = payload.invoice_number or InvoiceNumberInput()
-        number = requested.number or await repo.next_number(requested.serial)
-        invoice_number = InvoiceNumber(requested.serial, number)
+async def create_invoice(
+    tenant: CurrentTenant, payload: InvoiceCreate, session: SessionDep
+) -> Invoice:
+    issuer, recipient = await _find_parties(payload, session, tenant)
+    repo = InvoiceRepository(session, tenant.id)
+    invoice_number = await _resolve_number(payload, repo)
 
     invoice = Invoice(
+        owner=tenant,
         issuer=issuer,
         recipient=recipient,
         issue_date=payload.issue_date,
@@ -159,15 +159,17 @@ async def create_invoice(payload: InvoiceCreate, session: SessionDep) -> Invoice
         "assigning the next number of the serial. Issued invoices are immutable."
     ),
 )
-async def update_invoice(invoice_id: int, payload: InvoiceUpdate, session: SessionDep) -> Invoice:
-    repo = InvoiceRepository(session)
+async def update_invoice(
+    tenant: CurrentTenant, invoice_id: int, payload: InvoiceUpdate, session: SessionDep
+) -> Invoice:
+    repo = InvoiceRepository(session, tenant.id)
     invoice = await repo.find(invoice_id)
     if invoice is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Invoice not found")
     if invoice.state is InvoiceState.ISSUED:
         raise HTTPException(status.HTTP_409_CONFLICT, "An issued invoice can no longer be modified")
 
-    issuer, recipient = await _find_parties(payload, session)
+    issuer, recipient = await _find_parties(payload, session, tenant)
     invoice.invoice_number = await _resolve_number(payload, repo)
     invoice.issuer = issuer
     invoice.recipient = recipient
@@ -196,15 +198,19 @@ async def update_invoice(invoice_id: int, payload: InvoiceUpdate, session: Sessi
     description="Subjects ordered by name, optionally filtered with `?q=` (name or document).",
 )
 async def list_subjects(
-    session: SessionDep, q: SearchParam = None, limit: LimitParam = 50, offset: OffsetParam = 0
+    tenant: CurrentTenant,
+    session: SessionDep,
+    q: SearchParam = None,
+    limit: LimitParam = 50,
+    offset: OffsetParam = 0,
 ) -> list[Subject]:
-    repo = SubjectRepository(session)
+    repo = SubjectRepository(session, tenant.id)
     return list(await repo.find_all(search=q, limit=limit, offset=offset))
 
 
 @subject_router.get("/{subject_id}", response_model=SubjectRead, summary="Get a subject")
-async def get_subject(subject_id: int, session: SessionDep) -> Subject:
-    subject = await SubjectRepository(session).find(subject_id)
+async def get_subject(tenant: CurrentTenant, subject_id: int, session: SessionDep) -> Subject:
+    subject = await SubjectRepository(session, tenant.id).find(subject_id)
     if subject is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Subject not found")
     return subject
@@ -216,12 +222,15 @@ async def get_subject(subject_id: int, session: SessionDep) -> Subject:
     status_code=status.HTTP_201_CREATED,
     summary="Create a subject",
 )
-async def create_subject(payload: SubjectCreate, session: SessionDep) -> Subject:
+async def create_subject(
+    tenant: CurrentTenant, payload: SubjectCreate, session: SessionDep
+) -> Subject:
     subject = Subject(
+        owner=tenant,
         full_name=payload.full_name,
         document=IdentificationDocument(**payload.document.model_dump()),
         address=Address(**payload.address.model_dump()),
     )
-    await SubjectRepository(session).add(subject)
+    await SubjectRepository(session, tenant.id).add(subject)
     await session.commit()
     return subject

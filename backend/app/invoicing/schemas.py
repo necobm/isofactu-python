@@ -10,16 +10,14 @@ from decimal import Decimal
 from typing import Annotated
 
 from pydantic import (
-    BaseModel,
-    ConfigDict,
     Field,
     PlainSerializer,
     computed_field,
     field_validator,
     model_validator,
 )
-from pydantic.alias_generators import to_camel
 
+from app.core.schemas import ApiModel
 from app.invoicing.document_type import DocumentType
 from app.invoicing.invoice_state import InvoiceState
 from app.invoicing.money import bcmul
@@ -35,15 +33,6 @@ def _as_number(value: Decimal) -> float:
 _DecimalJson = PlainSerializer(_as_number, return_type=float, when_used="json")
 Money = Annotated[Decimal, Field(decimal_places=2, examples=[120.98]), _DecimalJson]
 Rate = Annotated[Decimal, Field(ge=0, le=100, decimal_places=2, examples=[21]), _DecimalJson]
-
-
-class ApiModel(BaseModel):
-    model_config = ConfigDict(
-        alias_generator=to_camel,
-        populate_by_name=True,
-        from_attributes=True,
-        str_strip_whitespace=True,
-    )
 
 
 # -- value objects --------------------------------------------------------------------

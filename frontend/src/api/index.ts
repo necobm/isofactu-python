@@ -1,3 +1,4 @@
 export * from './types'
 export { api } from './invoices'
-export { ApiError } from './client'
+export { auth, admin } from './accounts'
+export { ApiError, onUnauthorized } from './client'
