@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 from app.accounts.account_status import AccountStatus
 from app.accounts.models import User
 from app.accounts.role import Role
+from app.clients.models import Client
 from app.invoicing.document_type import DocumentType
 from app.invoicing.invoice_state import InvoiceState
 from app.invoicing.models import FiscalData, Invoice, InvoiceLine, Serial, Subject
@@ -235,9 +236,37 @@ class SerialFactory(BaseFactory):
     initial_number = 1
 
 
+class ClientFactory(BaseFactory):
+    """An entry of the tenant's client directory."""
+
+    class Meta:
+        model = Client
+
+    owner = factory.SubFactory(UserFactory)
+    document = factory.SubFactory(IdentificationDocumentFactory)
+    address = factory.SubFactory(AddressFactory)
+
+    @factory.lazy_attribute
+    def full_name(self) -> str:
+        faker = factory.Faker._get_faker(locale=LOCALE)
+        return faker.company() if self.document.type == DocumentType.CIF else faker.name()
+
+
 class SubjectFactory(BaseFactory):
+    """An invoice's own copy of its recipient; ``SubjectFactory.copy_of(client)`` makes one
+    from a client, as the API does."""
+
     class Meta:
         model = Subject
+
+    @classmethod
+    def copy_of(cls, client: Client) -> Subject:
+        return cls(
+            owner=client.owner,
+            full_name=client.full_name,
+            document=client.document,
+            address=client.address,
+        )
 
     owner = factory.SubFactory(UserFactory)
     document = factory.SubFactory(IdentificationDocumentFactory)

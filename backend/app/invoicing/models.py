@@ -35,7 +35,9 @@ from app.invoicing.value_objects import Address, IdentificationDocument, Invoice
 
 
 class Subject(Base):
-    """A company or person identified by NIF/CIF acting as issuer or recipient."""
+    """The recipient of an invoice: a copy of the client's data (name, NIF/CIF, address)
+    taken when the invoice was created, owned by that invoice. Clients themselves live in
+    the Clients module and are never referenced from here."""
 
     __tablename__ = "subject"
 

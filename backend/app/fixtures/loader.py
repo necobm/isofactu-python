@@ -10,7 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.accounts.models import User
 from app.accounts.repository import UserRepository
 from app.accounts.security import hash_password
+from app.clients.models import Client
 from app.fixtures.factories import (
+    ClientFactory,
     FiscalDataFactory,
     InvoiceFactory,
     SerialFactory,
@@ -31,16 +33,16 @@ DEMO_TENANT_NAME = "Cuenta de demostración"
 
 @dataclass(frozen=True, slots=True)
 class LoadReport:
-    subjects: int
+    clients: int
     invoices: int
     lines: int
     owner: str
 
 
 async def purge_fixtures(session: AsyncSession) -> None:
-    """Delete every invoice, line, subject and serial (in dependency order). Accounts and
-    their fiscal data are kept."""
-    for model in (InvoiceLine, Invoice, Subject, Serial):
+    """Delete every invoice, line, subject, client and serial (in dependency order).
+    Accounts and their fiscal data are kept."""
+    for model in (InvoiceLine, Invoice, Subject, Client, Serial):
         await session.execute(delete(model))
 
 
@@ -88,10 +90,10 @@ async def load_fixtures(
     purge: bool = False,
     password_hash_rounds: int = 12,
 ) -> LoadReport:
-    """Generate `clients` subjects and `invoices` invoices issued to them, all owned by
-    `owner` (the demo tenant when omitted), whose fiscal data and a serial are generated
-    too if missing. Issued invoices are numbered correlatively from that serial, in
-    issue-date order.
+    """Generate `clients` clients and `invoices` invoices issued to them (each with its own
+    copy of the client as recipient, as the API does), all owned by `owner` (the demo
+    tenant when omitted), whose fiscal data and a serial are generated too if missing.
+    Issued invoices are numbered correlatively from that serial, in issue-date order.
 
     The caller owns the transaction: nothing is committed here.
     """
@@ -106,10 +108,12 @@ async def load_fixtures(
     next_number = await InvoiceRepository(session, owner.id).next_number(serial)
 
     with bind_session(session):
-        client_pool = SubjectFactory.create_batch(clients, owner=owner)
+        client_pool = ClientFactory.create_batch(clients, owner=owner)
         generated = [
             InvoiceFactory(
-                owner=owner, issuer=issuer, recipient=client_pool[index % len(client_pool)]
+                owner=owner,
+                issuer=issuer,
+                recipient=SubjectFactory.copy_of(client_pool[index % len(client_pool)]),
             )
             for index in range(invoices)
         ]
@@ -122,7 +126,7 @@ async def load_fixtures(
 
     count = func.count()
     return LoadReport(
-        subjects=await session.scalar(select(count).select_from(Subject)) or 0,
+        clients=await session.scalar(select(count).select_from(Client)) or 0,
         invoices=await session.scalar(select(count).select_from(Invoice)) or 0,
         lines=await session.scalar(select(count).select_from(InvoiceLine)) or 0,
         owner=owner.email,

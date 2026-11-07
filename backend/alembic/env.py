@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # Import every module that declares models so that `Base.metadata` is complete.
 import app.accounts.models  # noqa: F401
+import app.clients.models  # noqa: F401
 import app.invoicing.models  # noqa: F401
 from app.core.config import get_settings
 from app.core.database import Base

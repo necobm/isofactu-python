@@ -17,7 +17,8 @@ The core of **issued invoices** works end to end (API + UI):
 - [x] Concepts with description, quantity, unit price and per-line VAT rate; invoice-level IRPF
       retention; subtotal / tax / retention / total computed server-side with exact decimals.
 - [x] Issue date, due date (validated), payment method and free-text notes.
-- [x] Pick the invoice's client from stored subjects (search by name or NIF/CIF).
+- [x] Pick the invoice's client from the client directory (search by name or NIF/CIF); the
+      invoice keeps its own copy of the client's data.
 - [x] Invoice list filtered by state, with detail view.
 - [x] Docker-based dev workflow, migrations, fixtures and API test suite.
 - [x] **Accounts and authentication** — e-mail + password login (no self-registration), two
@@ -30,13 +31,15 @@ The core of **issued invoices** works end to end (API + UI):
 - [x] **Serials** — numbering series managed per tenant in *Ajustes* (prefix, initial number,
       suffix, optional validity period); issued invoices take the next correlative number of the
       chosen serial. See [Invoice numbering](#invoice-numbering).
+- [x] **Clients** — a client directory (*Clientes*: searchable list, create / edit forms, delete
+      with confirmation), independent from invoicing: an invoice gets a *copy* of the chosen
+      client as its recipient (`Subject`), never a reference. See [Clients](#clients).
 
 Partially there, with known gaps:
 
 - [ ] **Fiscal data** — cannot be overridden for a single invoice yet.
-- [ ] **Clients** — subjects can be listed and created through the API, but the *Clientes* page is
-      a placeholder, new clients can't be created from the invoice form, and subjects can't be
-      edited or deleted.
+- [ ] **Clients** — cannot be created inline from the invoice form yet; suppliers (for received
+      invoices) are not modelled.
 - [ ] **Drafts** — must already satisfy the same content rules as issued invoices (the spec allows
       incomplete drafts) and cannot be deleted.
 - [ ] **Dashboard** — the layout exists but every figure and chart is static sample data.
@@ -44,8 +47,8 @@ Partially there, with known gaps:
 ### Next: complete the MVP
 
 1. **Per-invoice issuer** — allow editing the fiscal data for a single invoice only.
-2. **Client / supplier directory** — full CRUD for subjects, distinguishing clients (issued invoices)
-   from suppliers (received invoices); create a client inline from the invoice form.
+2. **Suppliers** — a supplier directory for received invoices; create a client inline from the
+   invoice form.
 3. **Draft rules** — let drafts be saved incomplete, enforce required fields only when issuing,
    and allow deleting drafts.
 4. **Received invoices (expenses)** — record supplier invoices with their concepts, VAT and IRPF.
@@ -174,13 +177,15 @@ session (see [Accounts & authentication](#accounts--authentication)). Invoicing 
 | GET    | `/api/serial/{id}`                      | ADMIN        | Serial detail                                  |
 | PUT    | `/api/serial/{id}`                      | ADMIN        | Update a serial (`409` when changing prefix / suffix / initial number of one in use) |
 | DELETE | `/api/serial/{id}`                      | ADMIN        | Delete a serial (`409` when issued invoices use it) |
+| GET    | `/api/client`                           | ADMIN        | Collection of clients (`?q=&limit=&offset=`)   |
+| GET    | `/api/client/{id}`                      | ADMIN        | Client detail                                  |
+| POST   | `/api/client`                           | ADMIN        | Create a client                                |
+| PUT    | `/api/client/{id}`                      | ADMIN        | Replace a client (invoices are not affected)   |
+| DELETE | `/api/client/{id}`                      | ADMIN        | Delete a client (invoices keep their copy)     |
 | GET    | `/api/invoice`                          | ADMIN        | Collection of invoices (`?state=&limit=&offset=`) |
 | GET    | `/api/invoice/{id}`                     | ADMIN        | Invoice detail                                 |
-| POST   | `/api/invoice`                          | ADMIN        | Create an invoice (draft or issued) with its lines (`409` until the fiscal data is set) |
-| PUT    | `/api/invoice/{id}`                     | ADMIN        | Replace a draft invoice, or issue it           |
-| GET    | `/api/subject`                          | ADMIN        | Collection of subjects (`?q=&limit=&offset=`)  |
-| GET    | `/api/subject/{id}`                     | ADMIN        | Subject detail                                 |
-| POST   | `/api/subject`                          | ADMIN        | Create a subject                               |
+| POST   | `/api/invoice`                          | ADMIN        | Create an invoice (draft or issued) for `clientId` with its lines (`409` until the fiscal data is set) |
+| PUT    | `/api/invoice/{id}`                     | ADMIN        | Replace a draft invoice (optionally re-pointing it at a `clientId`), or issue it |
 
 Example — `GET /api/invoice`:
 
@@ -222,6 +227,10 @@ Conventions:
 - The `issuer` of an invoice is never sent by the client: the server copies the account's
   **fiscal data** (`PUT /api/fiscal-data`) onto the invoice when it is created or a draft is
   saved. Issued invoices keep that copy for good, even if the fiscal data changes later.
+- Likewise the `recipient` is the invoice's own copy of the client sent as `clientId`
+  (required on `POST`). On a draft `PUT`, sending `clientId` refreshes the copy from that
+  client; omitting it keeps the recipient as it is. There is no `subject` API: subjects only
+  exist as part of an invoice.
 - `state` is the invoice lifecycle state: `DRAFT` (being prepared) or `ISSUED` (emitted). New
   invoices are created as `DRAFT` unless the payload says otherwise; `GET /api/invoice?state=`
   filters the collection (and its `total`) by state.
@@ -240,6 +249,22 @@ Conventions:
 - Monetary amounts are JSON numbers with at most two decimals (`120.98`); the backend validates and
   computes them with `Decimal`, so nothing is lost in arithmetic. Inputs also accept numeric strings.
 - Line amounts use scale 2 with **half-up rounding** (`99.99 × 21 % = 20.9979 → 21.00`).
+
+## Clients
+
+The *Clientes* page is the tenant's client directory: a searchable, paginated list (name,
+NIF/CIF, address) with an **edit** and a **delete** icon per row — deleting asks for
+confirmation — and a *Nuevo Cliente* button opening a full-page form like the invoice one.
+
+Clients live in their own module (`app/clients`) and are **never referenced by invoices**: when
+an invoice is created for a client, its data (name, NIF/CIF, address) is copied into a `Subject`
+of the Invoicing module that belongs to that invoice. Editing or deleting a client therefore
+never changes an invoice — issued ones show the client exactly as it was when they were issued.
+A draft re-saved with a `clientId` refreshes its copy (in place when the copy is its own; legacy
+drafts sharing a subject with another invoice get a fresh copy instead).
+
+Migration `0008` copies every pre-existing subject into the client directory and drops the ones
+no invoice refers to.
 
 ## Invoice numbering
 
@@ -351,8 +376,9 @@ isofactu/
 │   │   │   ├── schemas.py     #   Pydantic models = API contract
 │   │   │   ├── repository.py  #   Data access (users, system settings)
 │   │   │   └── router.py      #   /api/auth, /api/admin
+│   │   ├── clients/           # Clients module: the client directory (/api/client)
 │   │   ├── invoicing/         # Invoicing module (every row belongs to a tenant)
-│   │   │   ├── models.py      #   FiscalData, Serial, Subject, Invoice, InvoiceLine (SQLAlchemy)
+│   │   │   ├── models.py      #   FiscalData, Serial, Subject (recipient copy), Invoice, InvoiceLine
 │   │   │   ├── value_objects.py  # InvoiceNumber, IdentificationDocument, Address, Issuer (composites)
 │   │   │   ├── document_type.py  # CIF | NIF | OTHER
 │   │   │   ├── invoice_state.py  # DRAFT | ISSUED
@@ -373,7 +399,7 @@ isofactu/
 │   │   ├── TenantApp.tsx      # ADMIN shell: dashboard, invoices...
 │   │   ├── AdminApp.tsx       # SUPER_ADMIN shell: accounts, settings
 │   │   ├── api/               # Typed API client (api, auth, admin) + contract types
-│   │   ├── pages/             # Login, ActivateAccount, Dashboard, Invoices, InvoiceForm, FiscalDataSettings, SerialSettings, admin/
+│   │   ├── pages/             # Login, ActivateAccount, Dashboard, Invoices, InvoiceForm, Clients, ClientForm, settings pages, admin/
 │   │   ├── components/        # TopNav, forms, dashboard widgets, invoice form / table, admin/
 │   │   └── lib/               # AuthProvider + useAuth, tiny router, formatting, useApi hook
 │   └── vite.config.ts         # Builds to ../public, proxies /api in dev
@@ -385,7 +411,8 @@ isofactu/
 - **User / account** — someone who can log in. `ADMIN` users are tenants: every subject and invoice has one as `owner`. `SUPER_ADMIN` users only manage accounts.
 - **FiscalData** — the tenant's own identity (company name, CIF/NIF, address); one per account, edited in *Ajustes*.
 - **Serial** — a numbering series of a tenant (prefix, initial number, suffix, validity period). Locked once an issued invoice uses it.
-- **Subject** — a company or person identified by NIF/CIF that acts as recipient (client) of an invoice.
+- **Client** — an entry of the tenant's client directory (name, NIF/CIF, address). Independent from invoices.
+- **Subject** — an invoice's own copy of its recipient, taken from a client when the invoice is created.
 - **Invoice** — carries a copy of the issuer's fiscal data (**Issuer** value object), links a recipient, has a date, an invoice number, a state (`DRAFT` → `ISSUED`) and an optional IRPF retention rate, and contains one or more lines.
 - **InvoiceLine** — a concept with description, quantity, unit price and VAT rate. Amounts are computed with fixed-point decimals.
 - **InvoiceNumber** — value object: prefix + sequential number + suffix (`F-2026-42`), copied from the serial at issue time; unassigned while the invoice is a draft.
@@ -405,7 +432,7 @@ from that serial in issue-date order:
 ```bash
 make fixtures                                   # purge + 6 clients, 20 invoices, seed 42
 make fixtures ARGS="--invoices 50 --clients 10" # same, with options
-make fixtures-purge                             # remove invoices, subjects and serials (accounts and fiscal data are kept)
+make fixtures-purge                             # remove invoices, clients and serials (accounts and fiscal data are kept)
 
 # the underlying commands
 docker compose exec backend python -m app.cli fixtures load --invoices 50 --seed 42 --purge
@@ -435,11 +462,11 @@ def test_pure():                          # no database needed
 
 | Fixture                                                      | Provides                                   |
 |--------------------------------------------------------------|--------------------------------------------|
-| `subject_factory`, `invoice_factory`, `invoice_line_factory`, `user_factory` | Factory classes bound to the test session |
+| `client_factory`, `subject_factory`, `invoice_factory`, `invoice_line_factory`, `user_factory` | Factory classes bound to the test session |
 | `tenant`, `other_tenant`, `super_admin`                      | Persisted, active accounts (password `PASSWORD`) |
 | `fiscal_data`                                                | The fiscal data of `tenant` (needed to save invoices through the API) |
 | `serial`                                                     | A `F-2026-` serial of `tenant` (needed to issue invoices) |
-| `subject`, `invoice`                                         | One persisted instance, owned by `tenant`  |
+| `subject`, `invoice`                                         | One persisted instance, owned by `tenant` (`subject` is a recipient copy) |
 | `session`, `client`                                          | Async SQLAlchemy session / anonymous HTTP test client |
 | `tenant_client`, `super_admin_client`                        | HTTP test clients already logged in        |
 | `mailer`                                                     | `InMemoryMailer`: e-mails sent during the test (`mailer.outbox`) |

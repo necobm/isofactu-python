@@ -67,7 +67,7 @@ async def test_health_and_docs_are_public_but_nothing_else(client: AsyncClient) 
     for method, path in (
         ("GET", "/api/auth/me"),
         ("GET", "/api/invoice"),
-        ("POST", "/api/subject"),
+        ("POST", "/api/client"),
         ("GET", "/api/admin/user"),
         ("GET", "/api/admin/settings"),
     ):

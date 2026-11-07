@@ -98,7 +98,7 @@ def users_create_super_admin(
 @fixtures_app.command("load")
 def fixtures_load(
     invoices: Annotated[int, typer.Option(min=0, help="Number of invoices to generate")] = 20,
-    clients: Annotated[int, typer.Option(min=1, help="Number of client subjects")] = 6,
+    clients: Annotated[int, typer.Option(min=1, help="Number of clients")] = 6,
     seed: Annotated[int | None, typer.Option(help="Seed for reproducible data")] = None,
     purge: Annotated[bool, typer.Option(help="Delete existing data first")] = False,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmations")] = False,
@@ -125,7 +125,7 @@ def fixtures_load(
 
     report = _run(run())
     typer.secho(
-        f"Database now holds {report.subjects} subjects, {report.invoices} invoices "
+        f"Database now holds {report.clients} clients, {report.invoices} invoices "
         f"and {report.lines} lines, owned by {report.owner} (password: {DEMO_TENANT_PASSWORD}).",
         fg="green",
     )

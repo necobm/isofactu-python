@@ -1,5 +1,8 @@
 import { request } from './client'
 import type {
+  Client,
+  ClientCollection,
+  ClientInput,
   FiscalData,
   FiscalDataInput,
   HealthStatus,
@@ -9,8 +12,6 @@ import type {
   InvoiceState,
   Serial,
   SerialInput,
-  Subject,
-  SubjectInput,
 } from './types'
 
 export type PageParams = {
@@ -23,7 +24,7 @@ export type InvoiceListParams = PageParams & {
   state?: InvoiceState
 }
 
-export type SubjectListParams = PageParams & {
+export type ClientListParams = PageParams & {
   /** Case-insensitive match on the name or the document number. */
   q?: string
 }
@@ -61,9 +62,16 @@ export const api = {
   /** `409` when an issued invoice uses the serial. */
   deleteSerial: (id: number) => request<void>(`/api/serial/${id}`, { method: 'DELETE' }),
 
-  listSubjects: (params: SubjectListParams = {}, signal?: AbortSignal) =>
-    request<Subject[]>('/api/subject', { query: params, signal }),
+  listClients: (params: ClientListParams = {}, signal?: AbortSignal) =>
+    request<ClientCollection>('/api/client', { query: params, signal }),
 
-  createSubject: (input: SubjectInput) =>
-    request<Subject>('/api/subject', { method: 'POST', body: input }),
+  getClient: (id: number, signal?: AbortSignal) => request<Client>(`/api/client/${id}`, { signal }),
+
+  createClient: (input: ClientInput) => request<Client>('/api/client', { method: 'POST', body: input }),
+
+  updateClient: (id: number, input: ClientInput) =>
+    request<Client>(`/api/client/${id}`, { method: 'PUT', body: input }),
+
+  /** Invoices created with the client keep their own copy of its data. */
+  deleteClient: (id: number) => request<void>(`/api/client/${id}`, { method: 'DELETE' }),
 }

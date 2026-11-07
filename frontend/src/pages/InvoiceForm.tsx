@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { api, type Invoice, type InvoiceInput, type InvoiceState, type PaymentMethod, type Subject } from '@/api'
+import { api, type Client, type Invoice, type InvoiceInput, type InvoiceState, type Party, type PaymentMethod } from '@/api'
 import ConfirmDialog from '@/components/ConfirmDialog'
 import ClientPicker from '@/components/invoice/ClientPicker'
 import ConceptsTable from '@/components/invoice/ConceptsTable'
@@ -47,7 +47,10 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onOpenSettings
   const editing = invoiceId !== undefined
 
   const [serialId, setSerialId] = useState<number | null>(null)
-  const [client, setClient] = useState<Subject | null>(null)
+  // The client picked in this session; `null` while editing means "keep the recipient the
+  // draft already has" (invoices hold their own copy of the client, not a reference).
+  const [client, setClient] = useState<Client | null>(null)
+  const [recipient, setRecipient] = useState<Party | null>(null)
   const [lines, setLines] = useState<LineDraft[]>([emptyLine()])
   const [notes, setNotes] = useState('')
   const [retentionRate, setRetentionRate] = useState<number | null>(null)
@@ -87,7 +90,7 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onOpenSettings
     const invoice = existing.status === 'success' ? existing.data : null
     if (!invoice || loaded?.id === invoice.id) return
     setLoaded(invoice)
-    setClient(invoice.recipient)
+    setRecipient(invoice.recipient)
     setSerialId(invoice.serialId)
     setLines(
       invoice.lines.length > 0
@@ -110,7 +113,7 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onOpenSettings
   // A validation / server message only makes sense until the user edits the form again.
   useEffect(
     () => setError(null),
-    [client, lines, notes, retentionRate, paymentMethod, issueDate, dueDate, serialId],
+    [client, recipient, lines, notes, retentionRate, paymentMethod, issueDate, dueDate, serialId],
   )
 
   const amounts = useMemo(
@@ -160,7 +163,7 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onOpenSettings
         ? 'Ninguna serie está disponible en la fecha de emisión. Cambia la fecha o configura las series.'
         : 'Crea una serie de facturación en los ajustes para poder emitir facturas.'
     }
-    if (!client) return 'Selecciona un cliente.'
+    if (!client && !recipient) return 'Selecciona un cliente.'
     if (!issueDate) return 'Indica la fecha de emisión.'
     if (issueDate > isoToday()) return 'La fecha de emisión no puede ser futura.'
     if (dueDate && dueDate < issueDate) return 'La fecha de vencimiento no puede ser anterior a la de emisión.'
@@ -177,7 +180,8 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onOpenSettings
       // assigns the next number of the serial.
       serialId: selectedSerial?.id ?? null,
       // The issuer is not sent: the server stamps the account's fiscal data.
-      recipientId: client!.id,
+      // Omitted while editing if the client was not changed: the draft keeps its recipient.
+      ...(client ? { clientId: client.id } : {}),
       notes: notes.trim(),
       dueDate: dueDate || null,
       paymentMethod,
@@ -350,7 +354,13 @@ export default function InvoiceForm({ invoiceId, onBack, onSaved, onOpenSettings
             {/* Client section */}
             <div className="bg-white rounded-xl border border-slate-200 px-5 py-4">
               <h2 className="text-sm font-semibold text-slate-700 mb-4">Cliente</h2>
-              <ClientPicker value={client} onChange={setClient} />
+              <ClientPicker
+                value={client ?? recipient}
+                onChange={(picked) => {
+                  setClient(picked)
+                  if (!picked) setRecipient(null)
+                }}
+              />
             </div>
 
             {/* Concepts table */}

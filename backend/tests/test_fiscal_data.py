@@ -20,8 +20,8 @@ RECIPIENT = {"fullName": "Tech Solutions SL", "document": {"type": "CIF", "numbe
 LINE = {"description": "Consultoría", "quantity": 1, "unitPrice": 100, "taxRate": 21}
 
 
-async def _recipient_id(client: AsyncClient) -> int:
-    response = await client.post("/api/subject", json=RECIPIENT)
+async def _client_id(client: AsyncClient) -> int:
+    response = await client.post("/api/client", json=RECIPIENT)
     assert response.status_code == 201, response.text
     return response.json()["id"]
 
@@ -97,9 +97,9 @@ async def test_fiscal_data_is_per_tenant(
 
 
 async def test_invoices_need_the_fiscal_data(tenant_client: AsyncClient) -> None:
-    recipient_id = await _recipient_id(tenant_client)
+    client_id = await _client_id(tenant_client)
     response = await tenant_client.post(
-        "/api/invoice", json={"recipientId": recipient_id, "lines": [LINE]}
+        "/api/invoice", json={"clientId": client_id, "lines": [LINE]}
     )
     assert response.status_code == 409, response.text
     assert "fiscal data" in response.json()["detail"]
@@ -109,8 +109,8 @@ async def test_invoices_need_the_fiscal_data(tenant_client: AsyncClient) -> None
 async def test_invoices_are_stamped_with_the_fiscal_data(
     tenant_client: AsyncClient, fiscal_data: FiscalData, serial: Serial
 ) -> None:
-    recipient_id = await _recipient_id(tenant_client)
-    payload = {"recipientId": recipient_id, "lines": [LINE]}
+    client_id = await _client_id(tenant_client)
+    payload = {"clientId": client_id, "lines": [LINE]}
 
     draft = (await tenant_client.post("/api/invoice", json=payload)).json()
     issued = (
@@ -145,5 +145,5 @@ async def test_invoices_are_stamped_with_the_fiscal_data(
 async def test_fiscal_data_is_not_a_client(
     tenant_client: AsyncClient, fiscal_data: FiscalData
 ) -> None:
-    """The issuer lives on the invoice: it never shows up among the subjects (clients)."""
-    assert (await tenant_client.get("/api/subject")).json() == []
+    """The issuer lives on the invoice: it never shows up in the client directory."""
+    assert (await tenant_client.get("/api/client")).json()["total"] == 0

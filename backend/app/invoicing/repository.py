@@ -1,66 +1,35 @@
 """Data access for the Invoicing module (port of the Doctrine repositories).
 
-Both repositories are bound to a tenant (`owner_id`): every query is restricted to that
-tenant's rows, so an invoice or subject of another account is simply "not found".
+Every repository is bound to a tenant (`owner_id`): every query is restricted to that
+tenant's rows, so an invoice or serial of another account is simply "not found".
 """
 
 from collections.abc import Sequence
 
-from sqlalchemy import BigInteger, cast, func, or_, select, update
+from sqlalchemy import BigInteger, cast, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.invoicing.invoice_state import InvoiceState
 from app.invoicing.models import FiscalData, Invoice, Serial, Subject
 
-LIKE_ESCAPE = "\\"
-
-
-def _contains(term: str) -> str:
-    """`LIKE` pattern matching `term` anywhere, with LIKE metacharacters escaped."""
-    for char in (LIKE_ESCAPE, "%", "_"):
-        term = term.replace(char, LIKE_ESCAPE + char)
-    return f"%{term}%"
-
 
 class SubjectRepository:
+    """Subjects are the invoices' private copies of their recipients: there is no API to
+    manage them, they follow the invoice they belong to."""
+
     def __init__(self, session: AsyncSession, owner_id: int) -> None:
         self.session = session
         self.owner_id = owner_id
-
-    async def find_all(
-        self, *, search: str | None = None, limit: int = 50, offset: int = 0
-    ) -> Sequence[Subject]:
-        """Subjects ordered by name; `search` matches the name or the document number."""
-        stmt = (
-            select(Subject)
-            .where(Subject.owner_id == self.owner_id)
-            .order_by(Subject.full_name, Subject.id)
-            .limit(limit)
-            .offset(offset)
-        )
-        if search and (term := search.strip()):
-            pattern = _contains(term)
-            columns = Subject.__table__.c
-            stmt = stmt.where(
-                or_(
-                    Subject.full_name.ilike(pattern, escape=LIKE_ESCAPE),
-                    columns.document_number.ilike(pattern, escape=LIKE_ESCAPE),
-                )
-            )
-        return (await self.session.scalars(stmt)).all()
-
-    async def count(self) -> int:
-        stmt = select(func.count()).select_from(Subject).where(Subject.owner_id == self.owner_id)
-        return await self.session.scalar(stmt) or 0
 
     async def find(self, subject_id: int) -> Subject | None:
         stmt = select(Subject).where(Subject.id == subject_id, Subject.owner_id == self.owner_id)
         return await self.session.scalar(stmt)
 
-    async def add(self, subject: Subject) -> Subject:
-        self.session.add(subject)
-        await self.session.flush()
-        return subject
+    async def reference_count(self, subject: Subject) -> int:
+        """How many invoices hold `subject` as recipient (more than one only for data
+        created before clients were copied per invoice)."""
+        stmt = select(func.count()).select_from(Invoice).where(Invoice.recipient_id == subject.id)
+        return await self.session.scalar(stmt) or 0
 
 
 class FiscalDataRepository:

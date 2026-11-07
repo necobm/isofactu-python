@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounts.deps import CurrentTenant
 from app.accounts.models import User
+from app.clients.models import Client
+from app.clients.repository import ClientRepository
 from app.core.database import get_session
 from app.invoicing.invoice_state import InvoiceState
 from app.invoicing.models import FiscalData, Invoice, InvoiceLine, Serial, Subject
@@ -30,8 +32,6 @@ from app.invoicing.schemas import (
     InvoiceWrite,
     SerialRead,
     SerialWrite,
-    SubjectCreate,
-    SubjectRead,
 )
 from app.invoicing.value_objects import Address, IdentificationDocument, InvoiceNumber, Issuer
 
@@ -41,14 +41,9 @@ OffsetParam = Annotated[int, Query(ge=0, description="Number of items to skip")]
 StateParam = Annotated[
     InvoiceState | None, Query(description="Only invoices in this state (DRAFT | ISSUED)")
 ]
-SearchParam = Annotated[
-    str | None, Query(max_length=100, description="Match on the name or the document number")
-]
-
 fiscal_data_router = APIRouter(prefix="/fiscal-data", tags=["Fiscal data"])
 serial_router = APIRouter(prefix="/serial", tags=["Serials"])
 invoice_router = APIRouter(prefix="/invoice", tags=["Invoices"])
-subject_router = APIRouter(prefix="/subject", tags=["Subjects"])
 
 
 # -- fiscal data ----------------------------------------------------------------------
@@ -283,13 +278,39 @@ def _validation_error(field: str, message: str) -> HTTPException:
     )
 
 
-async def _find_recipient(payload: InvoiceWrite, session: AsyncSession, tenant: User) -> Subject:
-    """The recipient referenced by the payload, or a 422. Subjects of other tenants count as
+async def _find_client(client_id: int, session: AsyncSession, tenant: User) -> Client:
+    """The client referenced by the payload, or a 422. Clients of other tenants count as
     missing."""
-    recipient = await SubjectRepository(session, tenant.id).find(payload.recipient_id)
-    if recipient is None:
-        raise _validation_error("recipientId", "Subject not found")
-    return recipient
+    client = await ClientRepository(session, tenant.id).find(client_id)
+    if client is None:
+        raise _validation_error("clientId", "Client not found")
+    return client
+
+
+def _copy_into(subject: Subject, client: Client) -> Subject:
+    subject.full_name = client.full_name
+    subject.document = client.document
+    subject.address = client.address
+    return subject
+
+
+async def _recipient_from(client: Client, tenant: User) -> Subject:
+    """The invoice's own copy of the client: no reference is kept to the client, so editing
+    or deleting it later never changes the invoice."""
+    return _copy_into(Subject(owner=tenant), client)
+
+
+async def _refresh_recipient(
+    invoice: Invoice, client: Client, session: AsyncSession, tenant: User
+) -> None:
+    """Point a draft at (a copy of) `client`. The existing copy is reused when this is the
+    only invoice holding it; a copy shared with other invoices (legacy data) is left alone
+    and a fresh one is made."""
+    repo = SubjectRepository(session, tenant.id)
+    if await repo.reference_count(invoice.recipient) == 1:
+        _copy_into(invoice.recipient, client)
+    else:
+        invoice.recipient = await _recipient_from(client, tenant)
 
 
 async def _resolve_number(
@@ -318,23 +339,24 @@ async def _resolve_number(
     status_code=status.HTTP_201_CREATED,
     summary="Create an invoice",
     description=(
-        "Creates a DRAFT (numberless) or an ISSUED invoice. When issuing, the next number of "
-        "the serial `serialId` is assigned (the serial must be available on the issue date). "
-        "The issuer is the fiscal data of the account (`409` until it is set up)."
+        "Creates a DRAFT (numberless) or an ISSUED invoice whose recipient is a copy of the "
+        "client `clientId`. When issuing, the next number of the serial `serialId` is "
+        "assigned (the serial must be available on the issue date). The issuer is the fiscal "
+        "data of the account (`409` until it is set up)."
     ),
 )
 async def create_invoice(
     tenant: CurrentTenant, payload: InvoiceCreate, session: SessionDep
 ) -> Invoice:
     issuer = await _current_issuer(session, tenant)
-    recipient = await _find_recipient(payload, session, tenant)
+    client = await _find_client(payload.client_id, session, tenant)
     repo = InvoiceRepository(session, tenant.id)
     serial, invoice_number = await _resolve_number(payload, session, tenant, repo)
 
     invoice = Invoice(
         owner=tenant,
         issuer=issuer,
-        recipient=recipient,
+        recipient=await _recipient_from(client, tenant),
         issue_date=payload.issue_date,
         invoice_number=invoice_number,
         serial_id=serial.id if serial else None,
@@ -357,8 +379,10 @@ async def create_invoice(
     response_model=InvoiceRead,
     summary="Update a draft invoice",
     description=(
-        "Replaces a DRAFT invoice (lines included). Sending `state: ISSUED` issues it, "
-        "assigning the next number of its serial. Issued invoices are immutable."
+        "Replaces a DRAFT invoice (lines included). With `clientId` the recipient becomes a "
+        "fresh copy of that client; without it the current recipient is kept. Sending "
+        "`state: ISSUED` issues it, assigning the next number of its serial. Issued invoices "
+        "are immutable."
     ),
 )
 async def update_invoice(
@@ -372,11 +396,12 @@ async def update_invoice(
         raise HTTPException(status.HTTP_409_CONFLICT, "An issued invoice can no longer be modified")
 
     issuer = await _current_issuer(session, tenant)
-    recipient = await _find_recipient(payload, session, tenant)
+    if payload.client_id is not None:
+        client = await _find_client(payload.client_id, session, tenant)
+        await _refresh_recipient(invoice, client, session, tenant)
     serial, invoice.invoice_number = await _resolve_number(payload, session, tenant, repo)
     invoice.serial_id = serial.id if serial else None
     invoice.issuer = issuer  # drafts follow the current fiscal data until issued
-    invoice.recipient = recipient
     invoice.issue_date = payload.issue_date
     invoice.state = payload.state
     invoice.notes = payload.notes
@@ -390,51 +415,3 @@ async def update_invoice(
 
     await session.commit()
     return await repo.reload(invoice)
-
-
-# -- subjects -------------------------------------------------------------------------
-
-
-@subject_router.get(
-    "",
-    response_model=list[SubjectRead],
-    summary="List subjects",
-    description="Subjects ordered by name, optionally filtered with `?q=` (name or document).",
-)
-async def list_subjects(
-    tenant: CurrentTenant,
-    session: SessionDep,
-    q: SearchParam = None,
-    limit: LimitParam = 50,
-    offset: OffsetParam = 0,
-) -> list[Subject]:
-    repo = SubjectRepository(session, tenant.id)
-    return list(await repo.find_all(search=q, limit=limit, offset=offset))
-
-
-@subject_router.get("/{subject_id}", response_model=SubjectRead, summary="Get a subject")
-async def get_subject(tenant: CurrentTenant, subject_id: int, session: SessionDep) -> Subject:
-    subject = await SubjectRepository(session, tenant.id).find(subject_id)
-    if subject is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Subject not found")
-    return subject
-
-
-@subject_router.post(
-    "",
-    response_model=SubjectRead,
-    status_code=status.HTTP_201_CREATED,
-    summary="Create a subject",
-)
-async def create_subject(
-    tenant: CurrentTenant, payload: SubjectCreate, session: SessionDep
-) -> Subject:
-    subject = Subject(
-        owner=tenant,
-        full_name=payload.full_name,
-        document=IdentificationDocument(**payload.document.model_dump()),
-        address=Address(**payload.address.model_dump()),
-    )
-    await SubjectRepository(session, tenant.id).add(subject)
-    await session.commit()
-    return subject

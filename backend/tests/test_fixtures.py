@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounts.models import User
+from app.clients.models import Client
 from app.fixtures import (
     DEMO_TENANT_EMAIL,
     DEMO_TENANT_PASSWORD,
@@ -118,7 +119,7 @@ async def test_factories_feed_the_api(
 
 async def test_load_fixtures_and_purge(session: AsyncSession, client: AsyncClient) -> None:
     report = await load_fixtures(session, clients=3, invoices=7, seed=5, password_hash_rounds=4)
-    assert (report.subjects, report.invoices) == (3, 7)
+    assert (report.clients, report.invoices) == (3, 7)
     assert report.lines >= 7
     assert report.owner == DEMO_TENANT_EMAIL
 
@@ -150,7 +151,7 @@ async def test_load_fixtures_and_purge(session: AsyncSession, client: AsyncClien
     report = await load_fixtures(
         session, invoices=2, clients=1, seed=5, purge=True, password_hash_rounds=4
     )
-    assert (report.subjects, report.invoices) == (1, 2)
+    assert (report.clients, report.invoices) == (1, 2)
     assert await session.scalar(select(func.count()).select_from(User)) == 1
     assert await session.scalar(select(func.count()).select_from(FiscalData)) == 1  # reused
     assert await session.scalar(select(func.count()).select_from(Serial)) == 1  # regenerated
@@ -158,4 +159,5 @@ async def test_load_fixtures_and_purge(session: AsyncSession, client: AsyncClien
     await purge_fixtures(session)
     assert await session.scalar(select(func.count()).select_from(InvoiceLine)) == 0
     assert await session.scalar(select(func.count()).select_from(Subject)) == 0
+    assert await session.scalar(select(func.count()).select_from(Client)) == 0
     assert await session.scalar(select(func.count()).select_from(User)) == 1  # accounts stay

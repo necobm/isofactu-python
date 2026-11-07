@@ -5,8 +5,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.accounts.models import User
+from app.clients.models import Client
 from app.core.mail import InMemoryMailer, Mail, MailDeliveryError
-from app.fixtures import InvoiceFactory
+from app.fixtures import ClientFactory, InvoiceFactory
 from app.invoicing.models import Invoice, Subject
 
 
@@ -174,9 +175,12 @@ async def test_delete_account_removes_its_data(
     tenant: User,
     other_tenant: User,
     invoice_factory: type[InvoiceFactory],
+    client_factory: type[ClientFactory],
     session: AsyncSession,
 ) -> None:
     invoice_factory.create_batch(2, owner=tenant, lines=1)
+    client_factory(owner=tenant)
+    client_factory(owner=other_tenant)
     kept = invoice_factory(owner=other_tenant, lines=1)
     await session.flush()
 
@@ -185,9 +189,11 @@ async def test_delete_account_removes_its_data(
     assert (await super_admin_client.get(f"/api/admin/user/{tenant.id}")).status_code == 404
     assert (await super_admin_client.delete(f"/api/admin/user/{tenant.id}")).status_code == 404
 
-    # The database cascades: the tenant's invoices and subjects are gone, the other's stay
+    # The database cascades: the tenant's invoices, recipients and clients are gone, the
+    # other's stay
     assert await session.scalar(select(func.count()).select_from(Invoice)) == 1
     assert await session.scalar(select(func.count()).select_from(Subject)) == 1
+    assert await session.scalar(select(func.count()).select_from(Client)) == 1
     assert (await session.scalar(select(Invoice.id).where(Invoice.id == kept.id))) == kept.id
 
 

@@ -57,9 +57,21 @@ export interface Party {
   address: Address
 }
 
-/** A stored client / supplier. */
+/** The recipient as stored on an invoice: the invoice's own copy of a client. */
 export interface Subject extends Party {
   id: number
+}
+
+/** An entry of the tenant's client directory. */
+export interface Client extends Party {
+  id: number
+}
+
+export interface ClientCollection {
+  items: Client[]
+  total: number
+  limit: number
+  offset: number
 }
 
 /** The tenant's own identity as invoice issuer (`null` until set up). */
@@ -176,7 +188,11 @@ export interface InvoiceInput {
    */
   serialId?: number | null
   /** The issuer is not sent: the server stamps the account's fiscal data. */
-  recipientId: number
+  /**
+   * The client whose data is copied as recipient. Required when creating; on a draft
+   * update it replaces the recipient, and omitting it keeps the current one.
+   */
+  clientId?: number
   notes?: string
   dueDate?: string | null
   paymentMethod?: PaymentMethod
@@ -185,10 +201,10 @@ export interface InvoiceInput {
   lines: InvoiceLineInput[]
 }
 
-export interface SubjectInput {
+export interface ClientInput {
   fullName: string
-  document?: Partial<IdentificationDocument>
-  address?: Partial<Address>
+  document: IdentificationDocument
+  address: Address
 }
 
 export interface SerialInput {

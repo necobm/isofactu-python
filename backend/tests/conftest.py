@@ -45,6 +45,7 @@ from app.core.config import get_settings  # noqa: E402
 from app.core.database import get_session  # noqa: E402
 from app.core.mail import InMemoryMailer, get_mailer  # noqa: E402
 from app.fixtures import (  # noqa: E402
+    ClientFactory,
     FiscalDataFactory,
     InvoiceFactory,
     InvoiceLineFactory,
@@ -63,6 +64,7 @@ TABLES = (
     "invoice_line",
     "invoice",
     "subject",
+    "client",
     "serial",
     "fiscal_data",
     "activation_token",
@@ -203,6 +205,11 @@ def invoice_line_factory(factories: None) -> type[InvoiceLineFactory]:
 @pytest.fixture
 def user_factory(factories: None) -> type[UserFactory]:
     return UserFactory
+
+
+@pytest.fixture
+def client_factory(factories: None) -> type[ClientFactory]:
+    return ClientFactory
 
 
 @pytest_asyncio.fixture

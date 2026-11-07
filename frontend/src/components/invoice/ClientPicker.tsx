@@ -1,13 +1,14 @@
 import { useEffect, useId, useState } from 'react'
-import { api, type Subject } from '@/api'
+import { api, type Client, type Party } from '@/api'
 import { useApi } from '@/lib/useApi'
 
 const MAX_RESULTS = 8
 const DEBOUNCE_MS = 250
 
 interface ClientPickerProps {
-  value: Subject | null
-  onChange: (client: Subject | null) => void
+  /** What is currently selected: a client, or the recipient stored on a draft. */
+  value: Party | null
+  onChange: (client: Client | null) => void
 }
 
 function useDebounced<T>(value: T, delay: number): T {
@@ -19,7 +20,7 @@ function useDebounced<T>(value: T, delay: number): T {
   return debounced
 }
 
-/** Searches the subjects stored in the database (by name or NIF/CIF) and picks one as client. */
+/** Searches the client directory (by name or NIF/CIF) and picks the invoice's client. */
 export default function ClientPicker({ value, onChange }: ClientPickerProps) {
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
@@ -27,13 +28,13 @@ export default function ClientPicker({ value, onChange }: ClientPickerProps) {
   const listId = useId()
 
   const results = useApi(
-    (signal) => api.listSubjects({ q: debouncedQuery || undefined, limit: MAX_RESULTS }, signal),
+    (signal) => api.listClients({ q: debouncedQuery || undefined, limit: MAX_RESULTS }, signal),
     [debouncedQuery],
   )
-  const matches = results.data ?? []
+  const matches = results.data?.items ?? []
   const searching = results.status === 'loading' || debouncedQuery !== query.trim()
 
-  function select(subject: Subject) {
+  function select(subject: Client) {
     onChange(subject)
     setQuery('')
     setOpen(false)

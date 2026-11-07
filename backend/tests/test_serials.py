@@ -18,15 +18,15 @@ async def _create(client: AsyncClient, **payload) -> dict:
     return response.json()
 
 
-async def _recipient_id(client: AsyncClient) -> int:
-    response = await client.post("/api/subject", json=RECIPIENT)
+async def _client_id(client: AsyncClient) -> int:
+    response = await client.post("/api/client", json=RECIPIENT)
     assert response.status_code == 201, response.text
     return response.json()["id"]
 
 
-async def _issue(client: AsyncClient, recipient_id: int, serial_id: int, **extra) -> dict:
+async def _issue(client: AsyncClient, client_id: int, serial_id: int, **extra) -> dict:
     payload = {
-        "recipientId": recipient_id,
+        "clientId": client_id,
         "state": "ISSUED",
         "serialId": serial_id,
         "lines": [LINE],
@@ -128,18 +128,18 @@ async def test_serials_are_per_tenant(
 async def test_serials_in_use_are_locked(
     tenant_client: AsyncClient, fiscal_data: FiscalData
 ) -> None:
-    recipient_id = await _recipient_id(tenant_client)
+    client_id = await _client_id(tenant_client)
     serial = await _create(tenant_client, prefix="F-", initialNumber=5)
 
     # A draft remembering the serial does not lock it
     draft = await tenant_client.post(
         "/api/invoice",
-        json={"recipientId": recipient_id, "serialId": serial["id"], "lines": [LINE]},
+        json={"clientId": client_id, "serialId": serial["id"], "lines": [LINE]},
     )
     assert draft.status_code == 201 and draft.json()["serialId"] == serial["id"]
     assert (await tenant_client.get(f"/api/serial/{serial['id']}")).json()["locked"] is False
 
-    first = await _issue(tenant_client, recipient_id, serial["id"])
+    first = await _issue(tenant_client, client_id, serial["id"])
     assert first["invoiceNumber"]["formatted"] == "F-5"
     fetched = (await tenant_client.get(f"/api/serial/{serial['id']}")).json()
     assert (fetched["locked"], fetched["issuedCount"], fetched["nextNumber"]) == (True, 1, 6)
@@ -167,12 +167,12 @@ async def test_serials_in_use_are_locked(
 async def test_deleting_an_unused_serial_unlinks_drafts(
     tenant_client: AsyncClient, fiscal_data: FiscalData
 ) -> None:
-    recipient_id = await _recipient_id(tenant_client)
+    client_id = await _client_id(tenant_client)
     serial = await _create(tenant_client, prefix="TMP-")
     draft = (
         await tenant_client.post(
             "/api/invoice",
-            json={"recipientId": recipient_id, "serialId": serial["id"], "lines": [LINE]},
+            json={"clientId": client_id, "serialId": serial["id"], "lines": [LINE]},
         )
     ).json()
     assert draft["serialId"] == serial["id"]
@@ -189,7 +189,7 @@ async def test_deleting_an_unused_serial_unlinks_drafts(
 async def test_serial_availability_follows_the_issue_date(
     tenant_client: AsyncClient, fiscal_data: FiscalData
 ) -> None:
-    recipient_id = await _recipient_id(tenant_client)
+    client_id = await _client_id(tenant_client)
     last_month = TODAY - timedelta(days=30)
     yesterday = TODAY - timedelta(days=1)
     serial = await _create(
@@ -201,7 +201,7 @@ async def test_serial_availability_follows_the_issue_date(
 
     async def attempt(issue_date: date) -> int:
         payload = {
-            "recipientId": recipient_id,
+            "clientId": client_id,
             "state": "ISSUED",
             "serialId": serial["id"],
             "issueDate": issue_date.isoformat(),
@@ -221,13 +221,13 @@ async def test_serial_availability_follows_the_issue_date(
     # A draft can still point at it; only issuing is refused
     draft = await tenant_client.post(
         "/api/invoice",
-        json={"recipientId": recipient_id, "serialId": serial["id"], "lines": [LINE]},
+        json={"clientId": client_id, "serialId": serial["id"], "lines": [LINE]},
     )
     assert draft.status_code == 201, draft.text
     issued = await tenant_client.put(
         f"/api/invoice/{draft.json()['id']}",
         json={
-            "recipientId": recipient_id,
+            "clientId": client_id,
             "state": "ISSUED",
             "serialId": serial["id"],
             "lines": [LINE],
@@ -243,9 +243,9 @@ async def test_serial_availability_follows_the_issue_date(
     }
     before = await tenant_client.post(
         "/api/invoice",
-        json={"recipientId": recipient_id, "state": "ISSUED", "lines": [LINE], **far_past},
+        json={"clientId": client_id, "state": "ISSUED", "lines": [LINE], **far_past},
     )
     assert before.status_code == 422
-    assert (await _issue(tenant_client, recipient_id, open_ended["id"]))["invoiceNumber"][
+    assert (await _issue(tenant_client, client_id, open_ended["id"]))["invoiceNumber"][
         "formatted"
     ] == "O-1"

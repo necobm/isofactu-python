@@ -1,1 +1,2 @@
-"""Invoicing module: subjects (issuer / recipient), invoices and their lines."""
+"""Invoicing module: fiscal data, serials, invoices (with their own copy of the recipient,
+the `Subject`) and their lines."""

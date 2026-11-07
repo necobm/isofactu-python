@@ -165,18 +165,14 @@ class IssuerRead(ApiModel):
 # -- subject --------------------------------------------------------------------------
 
 
-class SubjectBase(ApiModel):
-    full_name: str = Field(max_length=255, examples=["Tech Solutions SL"])
-    document: IdentificationDocumentSchema = Field(default_factory=IdentificationDocumentSchema)
-    address: AddressSchema = Field(default_factory=AddressSchema)
+class SubjectRead(ApiModel):
+    """The recipient as stored on an invoice: a copy of the client taken when the invoice
+    was created (or the draft last re-pointed at a client)."""
 
-
-class SubjectCreate(SubjectBase):
-    pass
-
-
-class SubjectRead(SubjectBase):
     id: int
+    full_name: str = Field(max_length=255, examples=["Tech Solutions SL"])
+    document: IdentificationDocumentSchema
+    address: AddressSchema
 
 
 # -- invoice line ---------------------------------------------------------------------
@@ -221,7 +217,14 @@ class InvoiceWrite(ApiModel):
             "carry it to remember the choice."
         ),
     )
-    recipient_id: int = Field(gt=0)
+    client_id: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "The client whose data is copied as recipient. Required when creating; on a "
+            "draft update it replaces the recipient, and omitting it keeps the current one."
+        ),
+    )
     notes: str = Field(default="", max_length=5000)
     due_date: date | None = Field(default=None, description="Cannot be earlier than the issue date")
     payment_method: PaymentMethod = PaymentMethod.TRANSFER
@@ -247,7 +250,7 @@ class InvoiceWrite(ApiModel):
 
 
 class InvoiceCreate(InvoiceWrite):
-    pass
+    client_id: int = Field(gt=0, description="The client whose data is copied as recipient")
 
 
 class InvoiceUpdate(InvoiceWrite):
