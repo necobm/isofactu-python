@@ -38,7 +38,7 @@ export default function Settings() {
   }
 
   return (
-    <section className="bg-white rounded-xl border border-slate-100 shadow-sm max-w-2xl" aria-label="Ajustes">
+    <section className="bg-white rounded-xl border border-slate-100 shadow-sm" aria-label="Ajustes">
       <div className="px-5 py-4 border-b border-slate-100">
         <h2 className="text-sm font-semibold text-slate-800">Enlaces de activación</h2>
         <p className="text-xs text-slate-400 mt-0.5">

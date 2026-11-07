@@ -114,7 +114,7 @@ export default function FiscalDataSettings({ onSaved }: FiscalDataSettingsProps)
   const disabled = busy || !loaded
 
   return (
-    <section className="bg-white rounded-xl border border-slate-100 shadow-sm max-w-3xl" aria-label="Datos fiscales">
+    <section className="bg-white rounded-xl border border-slate-100 shadow-sm" aria-label="Datos fiscales">
       <div className="px-5 py-4 border-b border-slate-100">
         <h2 className="text-sm font-semibold text-slate-800">Datos fiscales</h2>
         <p className="text-xs text-slate-400 mt-0.5">

@@ -65,7 +65,7 @@ export default function SerialSettings() {
   }
 
   return (
-    <section className="bg-white rounded-xl border border-slate-100 shadow-sm overflow-hidden max-w-3xl" aria-label="Series de facturación">
+    <section className="bg-white rounded-xl border border-slate-100 shadow-sm overflow-hidden" aria-label="Series de facturación">
       <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
         <div>
           <h2 className="text-sm font-semibold text-slate-800">Series de facturación</h2>
