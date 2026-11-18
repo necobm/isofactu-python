@@ -81,11 +81,11 @@ async def test_login_sets_a_session_cookie(client: AsyncClient, tenant: User) ->
 
     # The e-mail is case-insensitive and surrounding blanks are ignored
     response = await client.post(
-        "/api/auth/login", json={"email": "  Tenant@Example.LOCAL ", "password": PASSWORD}
+        "/api/auth/login", json={"email": "  Tenant@Example.COM ", "password": PASSWORD}
     )
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["email"] == "tenant@Example.local"
+    assert body["email"] == "tenant@example.com"  # as stored: normalised
     assert (body["role"], body["status"]) == ("ADMIN", "ACTIVE")
     assert body["hasPassword"] is True
     assert body["lastLoginAt"] is not None
@@ -182,7 +182,7 @@ async def test_activation_flow(
     assert timedelta(hours=23) < expires_at - datetime.now(UTC) <= timedelta(hours=24)
 
     # One e-mail, to the new user, carrying the link
-    assert [mail.to for mail in mailer.outbox] == ["ana@Example.local"]
+    assert [mail.to for mail in mailer.outbox] == ["ana@example.local"]  # normalised
     assert mailer.outbox[0].subject == "Activa tu cuenta de Isofactu"
     assert "Hola Ana," in mailer.outbox[0].text
     assert "24 horas" in mailer.outbox[0].text
@@ -191,7 +191,7 @@ async def test_activation_flow(
     # The page first checks the link and learns who it is for
     info = await client.get(f"/api/auth/activate/{token}")
     assert info.status_code == 200, info.text
-    assert info.json()["email"] == "ana@Example.local"
+    assert info.json()["email"] == "ana@example.local"
     assert (await client.get("/api/auth/activate/not-a-token")).status_code == 404
 
     # Until the password is chosen the account cannot log in

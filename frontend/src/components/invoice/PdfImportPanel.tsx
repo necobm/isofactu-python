@@ -19,6 +19,10 @@ interface PdfImportPanelProps {
   error: string | null
   /** The total computed from the form's lines, checked against the printed one. */
   computedTotal: number
+  /** `false` when the account has no AI vendor set up: importing is not possible yet. */
+  available?: boolean
+  /** Open the settings to set up the AI vendor. */
+  onConfigure?: () => void
 }
 
 /** Reads a supplier's invoice from a PDF to fill in the received invoice form. */
@@ -29,6 +33,8 @@ export default function PdfImportPanel({
   result,
   error,
   computedTotal,
+  available = true,
+  onConfigure,
 }: PdfImportPanelProps) {
   const input = useRef<HTMLInputElement>(null)
   const totalMismatch =
@@ -42,6 +48,17 @@ export default function PdfImportPanel({
           Sube la factura del proveedor y rellenaremos el formulario con sus datos. Revísalos antes de guardar.
         </p>
       </div>
+
+      {!available && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 space-y-2">
+          <p>Para importar facturas desde PDF, elige en los ajustes el proveedor de IA, el modelo y tu API key.</p>
+          {onConfigure && (
+            <button type="button" onClick={onConfigure} className="font-medium text-amber-800 underline hover:text-amber-900">
+              Configurar la IA
+            </button>
+          )}
+        </div>
+      )}
 
       <input
         ref={input}
@@ -58,7 +75,7 @@ export default function PdfImportPanel({
       <button
         type="button"
         onClick={() => input.current?.click()}
-        disabled={importing || disabled}
+        disabled={importing || disabled || !available}
         className="w-full flex items-center justify-center gap-2 text-sm font-medium text-indigo-700 bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 px-4 py-2 rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
       >
         {importing ? (

@@ -346,3 +346,49 @@ export interface PasswordChangeInput {
   currentPassword: string
   newPassword: string
 }
+
+// -- AI settings (vendor used to read received invoices from PDF) ------------------------
+
+export type AiProviderId = 'gemini' | 'anthropic' | 'openai' | 'azure' | 'bedrock'
+
+export interface AiProvider {
+  id: AiProviderId
+  label: string
+  /** Azure: the resource `endpoint` is required; `apiVersion` and `deployment` optional. */
+  needsEndpoint: boolean
+  /** Bedrock: the AWS `region` is required. */
+  needsRegion: boolean
+}
+
+export interface AiModel {
+  id: string
+  /** The PDF itself is sent to the model, so scanned invoices can be read too. */
+  readsPdf: boolean
+  structuredOutput: boolean
+}
+
+export interface AiSettings {
+  provider: AiProviderId
+  model: string
+  endpoint: string
+  apiVersion: string
+  deployment: string
+  region: string
+  /** The last characters of the stored key (`…f3a9`); the key itself is never returned. */
+  apiKeyHint: string | null
+  /** `false` when the stored key can no longer be decrypted: it must be entered again. */
+  apiKeyReadable: boolean
+  readsPdf: boolean
+  updatedAt: string
+}
+
+export interface AiSettingsInput {
+  provider: AiProviderId
+  model: string
+  /** Omit to keep the stored key (required the first time and when the provider changes). */
+  apiKey?: string
+  endpoint?: string
+  apiVersion?: string
+  deployment?: string
+  region?: string
+}

@@ -1,5 +1,10 @@
 import { download, request } from './client'
 import type {
+  AiModel,
+  AiProvider,
+  AiProviderId,
+  AiSettings,
+  AiSettingsInput,
   Client,
   Dashboard,
   ClientCollection,
@@ -104,6 +109,22 @@ export const api = {
 
   saveFiscalData: (input: FiscalDataInput) =>
     request<FiscalData>('/api/fiscal-data', { method: 'PUT', body: input }),
+
+  /** The AI vendor the account reads received invoices with, `null` until set up. */
+  getAiSettings: (signal?: AbortSignal) => request<AiSettings | null>('/api/ai-settings', { signal }),
+
+  /** `apiKey` may be left out to keep the stored one (the server never returns it). */
+  saveAiSettings: (input: AiSettingsInput) =>
+    request<AiSettings>('/api/ai-settings', { method: 'PUT', body: input }),
+
+  /** Forgets the AI vendor and its key: PDF import becomes unavailable. */
+  deleteAiSettings: () => request<void>('/api/ai-settings', { method: 'DELETE' }),
+
+  listAiProviders: (signal?: AbortSignal) => request<AiProvider[]>('/api/ai-settings/providers', { signal }),
+
+  /** The vendor's models: those that read PDF files (scans too) first. */
+  listAiModels: (provider: AiProviderId, signal?: AbortSignal) =>
+    request<AiModel[]>(`/api/ai-settings/providers/${provider}/models`, { signal }),
 
   /** The numbering series of the account, with their usage and next number. */
   listSerials: (signal?: AbortSignal) => request<Serial[]>('/api/serial', { signal }),

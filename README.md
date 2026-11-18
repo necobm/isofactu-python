@@ -50,8 +50,9 @@ The core of **issued invoices** works end to end (API + UI):
       is the recipient, and there are no drafts: they can always be edited or deleted. See
       [Received invoices](#received-invoices-expenses).
 - [x] **Import received invoices from PDF** — upload the supplier's PDF (any layout, scans
-      included) and the form is filled in from it, to review before saving. Read by an LLM of
-      any vendor (LiteLLM); off unless `LLM_PROVIDER` / `LLM_MODEL` are set. See
+      included) and the form is filled in from it, to review before saving. Read by the AI
+      vendor each tenant chooses in *Ajustes* (Gemini, Anthropic, OpenAI, Azure OpenAI, Amazon
+      Bedrock), with its own model and API key, stored encrypted. See
       [Importing from PDF](#importing-from-pdf).
 - [x] **Dashboard** — income, expenses and what is pending collection, plus an income vs
       expenses chart, all computed from the account's invoices for a chosen period; issued
@@ -94,7 +95,8 @@ Partially there, with known gaps:
 | Auth       | bcrypt password hashes, signed HttpOnly session cookie (PyJWT) |
 | Geo data   | ISO 3166 countries / provinces (pycountry, Spanish names), GeoNames postal codes and localities |
 | E-mail     | SMTP (stdlib) — Mailpit in development                  |
-| Invoice reading | Any LLM vendor through LiteLLM (+ pypdf): PDF import of received invoices |
+| Invoice reading | Each tenant's AI vendor through LiteLLM (+ pypdf): PDF import of received invoices |
+| Secrets at rest | `cryptography` (Fernet): the tenants' AI API keys, encrypted in the database |
 | PDF export | ReportLab: issued invoices as PDF documents                     |
 | Runtime    | Docker Compose                                          |
 
@@ -114,7 +116,8 @@ docker compose up --build          # or: make up
 
 `.env.example` is a template: `.env` itself is git-ignored and must never be committed, as it
 holds the passwords and secrets. At least set `POSTGRES_USER` / `POSTGRES_PASSWORD` (compose
-has no default database password), a random `SECRET_KEY`, and the first `SUPER_ADMIN_EMAIL` /
+has no default database password), a random `SECRET_KEY`, an `ENCRYPTION_KEYS` key (see
+[Encryption of stored secrets](#encryption-of-stored-secrets)), and the first `SUPER_ADMIN_EMAIL` /
 `SUPER_ADMIN_PASSWORD`. Real environment variables take precedence over `.env`.
 
 This starts four things:
@@ -226,6 +229,11 @@ session (see [Accounts & authentication](#accounts--authentication)). Invoicing 
 | POST   | `/api/received-invoice`                 | ADMIN        | Record a supplier's invoice: supplier, number (required) and lines as entered (`409` until the fiscal data is set) |
 | PUT    | `/api/received-invoice/{id}`            | ADMIN        | Replace a received invoice (always allowed)    |
 | DELETE | `/api/received-invoice/{id}`            | ADMIN        | Delete a received invoice (always allowed)     |
+| GET    | `/api/ai-settings`                      | ADMIN        | The account's AI vendor and model (the API key is never returned), `null` until set up |
+| PUT    | `/api/ai-settings`                      | ADMIN        | Set the AI vendor, model and API key (stored encrypted; omit `apiKey` to keep it) |
+| DELETE | `/api/ai-settings`                      | ADMIN        | Forget the AI settings (PDF import becomes unavailable) |
+| GET    | `/api/ai-settings/providers`            | ADMIN        | The AI vendors to choose from |
+| GET    | `/api/ai-settings/providers/{p}/models` | ADMIN        | The vendor's models (those that read PDF files first) |
 | POST   | `/api/received-invoice/extract`         | ADMIN        | Read a supplier's invoice from a PDF (multipart `file`) → a draft to pre-fill the form; nothing is stored |
 
 Example — `GET /api/invoice`:
@@ -401,9 +409,8 @@ on the invoice (live, until they match).
 How it works (`app/invoicing/extraction.py`, `POST /api/received-invoice/extract`):
 
 - Supplier invoices come in every layout, and some are scans, so they are not parsed with
-  rules: they are read by an **LLM**, reached through [LiteLLM](https://docs.litellm.ai/) so
-  that the vendor and model are just configuration (Anthropic, OpenAI, Gemini, Mistral, Azure,
-  Bedrock, a local Ollama...). The model must answer with JSON following a schema of the data
+  rules: they are read by an **LLM** -- the vendor and model the tenant chose in its settings
+  (see below) --, reached through [LiteLLM](https://docs.litellm.ai/). The model must answer with JSON following a schema of the data
   we need (using the vendor's structured output when LiteLLM knows it has one, the prompt
   otherwise). The account's fiscal data is given as the expected customer, so that the
   supplier is not mixed up with it.
@@ -416,36 +423,58 @@ How it works (`app/invoicing/extraction.py`, `POST /api/received-invoice/extract
   rounded to cents, rates bounded, anything unusable left empty.
 - Rates outside the form's presets (IGIC 7 %, the 19 % IRPF of rents...) are kept and shown.
 
-Configuration (`.env` / environment; see `.env.example`):
+**Choosing the AI vendor (per tenant).** Each tenant sets up its own vendor in *Ajustes ›
+Inteligencia artificial*; until it does, the import panel says so and links there (and the
+endpoint answers `503`). Nothing about the vendor is configured on the server:
+
+| Field | |
+|---|---|
+| Provider | Google Gemini, Anthropic, OpenAI, Azure OpenAI or Amazon Bedrock |
+| Model | Picked from the provider's models, reloaded whenever the provider changes (`GET /api/ai-settings/providers/{provider}/models`). They come from the model catalogue bundled with LiteLLM -- chat models only, without deprecated ones, region-pinned duplicates or special-purpose variants -- so upgrading LiteLLM brings newer models. Models that read PDF files come first; the others are marked *solo PDF con texto* (they cannot read scans). |
+| API key | The tenant's own key with that vendor. **Stored encrypted** (see [Encryption of stored secrets](#encryption-of-stored-secrets)) and never returned by the API: the settings only show its last four characters. Leave the field empty to keep it; it is required again when the provider (or the Azure resource) changes. |
+| Azure only | The resource endpoint (`https://<resource>.openai.azure.com`; only Azure hosts are accepted, since the server calls that URL), the deployment name (when it differs from the model's) and, optionally, the API version. |
+| Bedrock only | The AWS region. The key is a [Bedrock API key](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys.html) (no AWS access keys). |
+
+The server only bounds the work:
 
 | Variable | Default | |
 |---|---|---|
-| `LLM_PROVIDER` | *(empty)* | A [LiteLLM provider](https://docs.litellm.ai/docs/providers): `anthropic`, `openai`, `gemini`, `mistral`, `azure`, `bedrock`, `ollama`... |
-| `LLM_MODEL` | *(empty)* | The vendor's model, e.g. `claude-sonnet-4-5`, `gpt-4o`, `gemini-2.5-flash`, `llama3.1`. With `LLM_PROVIDER`, enables the feature; without them the button answers that PDF import is not available (`503`). |
-| `LLM_API_KEY` | *(empty)* | The vendor's API key (a secret: only in your `.env`). Not needed by local models. |
-| `LLM_API_BASE` | *(empty)* | A custom endpoint: an Ollama server, an Azure deployment, a proxy... |
 | `LLM_TIMEOUT` | `120` | Seconds before giving up on a PDF |
 | `INVOICE_PDF_MAX_BYTES` | `10485760` | Largest PDF accepted (`413` above) |
 
-For example:
-
-```bash
-LLM_PROVIDER=anthropic  LLM_MODEL=claude-sonnet-4-5  LLM_API_KEY=sk-ant-...
-LLM_PROVIDER=openai     LLM_MODEL=gpt-4o             LLM_API_KEY=sk-...
-LLM_PROVIDER=gemini     LLM_MODEL=gemini-2.5-flash   LLM_API_KEY=...
-LLM_PROVIDER=ollama     LLM_MODEL=llama3.1           LLM_API_BASE=http://host.docker.internal:11434
-```
-
-Vendors that need more than a key (the API version of Azure, the AWS credentials of
-Bedrock...) read LiteLLM's own variables for them (`AZURE_API_VERSION`, `AWS_REGION_NAME`...):
-add those to the `backend` service environment in `compose.yaml`. LiteLLM is set to use the
-model metadata bundled with it rather than downloading it from GitHub at run time.
+Every call carries the tenant's own key, so LiteLLM never falls back to vendor credentials in
+the server's environment — still, do not set any (`OPENAI_API_KEY`, `AWS_*`...) on the
+backend. `LLM_PROVIDER`, `LLM_MODEL`, `LLM_API_KEY` and `LLM_API_BASE` are no longer read:
+after upgrading, each tenant enters its vendor in the settings (migration `0013` adds the
+`ai_settings` table). LiteLLM uses the model metadata bundled with it rather than downloading
+it from GitHub at run time.
 
 > **Privacy.** Importing sends the PDF — personal and financial data of the supplier and of
-> the account — to the configured LLM vendor (nothing leaves your network with a local
-> model). Make sure that is acceptable (and covered by your data processing agreements)
-> before enabling it in production. The backend never logs the contents of an invoice. With
-> a hosted vendor, every import is a paid API call.
+> the account — to the AI vendor the tenant chose. Tenants should make sure that is
+> acceptable (and covered by their agreement with the vendor); for data kept in the EU, pick
+> an EU endpoint (an Azure resource in an EU region, a Bedrock `eu.` model in an EU region). The backend never logs the contents of an invoice. With
+> a hosted vendor, every import is a paid API call, billed to the tenant's key.
+
+### Encryption of stored secrets
+
+The tenants' API keys are encrypted before they reach the database (`app/core/crypto.py`):
+Fernet — AES-128-CBC with a random IV plus HMAC-SHA256, so the same key never encrypts to the
+same text and tampering is detected. The API never returns a key; a key that can no longer
+be decrypted is reported as such in the settings (and by PDF import) and must be entered
+again.
+
+The encryption keys come from `ENCRYPTION_KEYS`: comma-separated Fernet keys, **the first one
+encrypts and all of them decrypt**. Without it, a key derived from `SECRET_KEY` (HKDF) is
+used — fine for development, but set a real one in production so that `SECRET_KEY` can be
+changed without losing the stored keys. The derived key is always kept last for decryption,
+so adding `ENCRYPTION_KEYS` later does not lose what was stored before.
+
+```bash
+docker compose exec backend python -m app.cli secrets generate-key   # a new key
+# Rotating: put the new key first (ENCRYPTION_KEYS=new,old), restart, then
+docker compose exec backend python -m app.cli secrets rotate         # re-encrypt with the new key
+# ... and drop the old key from ENCRYPTION_KEYS
+```
 
 ## Clients
 
@@ -576,13 +605,13 @@ legacy data) from the panel. Fresh databases do not get that account.
 ```
 isofactu/
 ├── compose.yaml               # Docker Compose: db, mailpit, backend, frontend-build, frontend (dev profile)
-├── .env.example               # Template of `.env` (git-ignored): Postgres, ports, SECRET_KEY, SMTP, first SUPER_ADMIN, LLM
+├── .env.example               # Template of `.env` (git-ignored): Postgres, ports, SECRET_KEY, ENCRYPTION_KEYS, SMTP, first SUPER_ADMIN
 ├── backend/
 │   ├── app/
 │   │   ├── main.py            # FastAPI app factory (/api/docs, CORS, SPA mount)
 │   │   ├── api.py             # /api router (+ /api/health)
 │   │   ├── spa.py             # Serves ./public with history-API fallback
-│   │   ├── core/              # Settings, async engine / session, declarative base, mailer, ApiModel
+│   │   ├── core/              # Settings, async engine / session, declarative base, mailer, ApiModel, crypto (secrets at rest)
 │   │   ├── accounts/          # Accounts module
 │   │   │   ├── models.py      #   User, ActivationToken, AppSetting
 │   │   │   ├── role.py        #   SUPER_ADMIN | ADMIN
@@ -594,6 +623,7 @@ isofactu/
 │   │   │   ├── schemas.py     #   Pydantic models = API contract
 │   │   │   ├── repository.py  #   Data access (users, system settings)
 │   │   │   └── router.py      #   /api/auth, /api/admin
+│   │   ├── ai/                # AI module: each tenant's AI vendor (/api/ai-settings), provider + model catalogue
 │   │   ├── clients/           # Clients module: the client directory (/api/client)
 │   │   ├── dashboard/         # Dashboard module: income, expenses, pending collection (/api/dashboard)
 │   │   ├── geo/               # Geo module: countries, provinces, cities (+ data/, see scripts/)
@@ -602,7 +632,7 @@ isofactu/
 │   │   │   ├── value_objects.py  # InvoiceNumber, IdentificationDocument, Address, Issuer (composites)
 │   │   │   ├── document_type.py  # CIF | NIF | OTHER
 │   │   │   ├── invoice_kind.py   # ISSUED | RECEIVED (income / expense)
-│   │   │   ├── extraction.py  #   Reading received invoices from PDF (any LLM, via LiteLLM) into a form draft
+│   │   │   ├── extraction.py  #   Reading received invoices from PDF (the tenant's AI vendor, via LiteLLM) into a form draft
 │   │   │   ├── pdf.py         #   Rendering issued invoices as PDF (ReportLab)
 │   │   │   ├── invoice_state.py  # DRAFT | ISSUED
 │   │   │   ├── payment_method.py # TRANSFER | CASH | CARD | DIRECT_DEBIT

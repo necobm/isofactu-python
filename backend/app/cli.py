@@ -4,6 +4,8 @@ python -m app.cli users create-super-admin --email admin@example.local   # promp
 python -m app.cli fixtures load --invoices 30 --seed 42
 python -m app.cli fixtures load --purge --yes
 python -m app.cli fixtures purge --yes
+python -m app.cli secrets generate-key     # a new key for ENCRYPTION_KEYS
+python -m app.cli secrets rotate           # re-encrypt stored secrets with the current key
 """
 
 from __future__ import annotations
@@ -18,7 +20,9 @@ from app.accounts.repository import UserRepository
 from app.accounts.role import Role
 from app.accounts.schemas import ActivationRequest, UserCreate
 from app.accounts.service import AccountService, EmailAlreadyTaken
+from app.ai.repository import all_ai_settings
 from app.core.config import get_settings
+from app.core.crypto import SecretDecryptionError, generate_key, get_secret_box
 from app.core.database import dispose_engine, get_session_factory
 from app.core.mail import get_mailer
 from app.fixtures import DEMO_TENANT_PASSWORD, load_fixtures, purge_fixtures
@@ -28,6 +32,10 @@ users_app = typer.Typer(no_args_is_help=True, help="Manage user accounts.")
 fixtures_app = typer.Typer(no_args_is_help=True, help="Generate or remove fixture data.")
 app.add_typer(users_app, name="users")
 app.add_typer(fixtures_app, name="fixtures")
+secrets_app = typer.Typer(
+    no_args_is_help=True, help="Encryption of the secrets stored in the database."
+)
+app.add_typer(secrets_app, name="secrets")
 
 
 def _run(coro):
@@ -155,6 +163,44 @@ def fixtures_purge(
 
     _run(run())
     typer.secho("All invoicing data removed.", fg="green")
+
+
+@secrets_app.command("generate-key")
+def secrets_generate_key() -> None:
+    """Print a new random key for ENCRYPTION_KEYS."""
+    typer.echo(generate_key())
+
+
+@secrets_app.command("rotate")
+def secrets_rotate() -> None:
+    """Re-encrypt the stored secrets (the tenants' AI API keys) with the current key.
+
+    The current key is the first of ENCRYPTION_KEYS: put the new key first, run this, then
+    drop the old one.
+    """
+
+    async def run() -> tuple[int, list[int]]:
+        box = get_secret_box()
+        rotated, unreadable = 0, []
+        async with get_session_factory()() as session:
+            for settings in await all_ai_settings(session):
+                try:
+                    settings.api_key_encrypted = box.rotate(settings.api_key_encrypted)
+                    rotated += 1
+                except SecretDecryptionError:
+                    unreadable.append(settings.owner_id)
+            await session.commit()
+        return rotated, unreadable
+
+    rotated, unreadable = _run(run())
+    typer.secho(f"{rotated} API key(s) re-encrypted with the current key.", fg="green")
+    if unreadable:
+        typer.secho(
+            f"{len(unreadable)} could not be decrypted with any configured key (accounts "
+            f"{', '.join(map(str, unreadable))}): those tenants must enter them again.",
+            fg="yellow",
+        )
+        raise typer.Exit(code=1)
 
 
 def main() -> None:

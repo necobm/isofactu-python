@@ -62,6 +62,7 @@ from app.invoicing.value_objects import Address, IdentificationDocument  # noqa:
 from app.main import create_app  # noqa: E402
 
 TABLES = (
+    "ai_settings",
     "invoice_line",
     "invoice",
     "subject",

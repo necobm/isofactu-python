@@ -158,36 +158,10 @@ async def test_extract_flags_invoices_addressed_to_someone_else(
 async def test_extract_when_pdf_import_is_disabled(
     tenant_client: AsyncClient, use_extractor
 ) -> None:
-    use_extractor(None)
+    use_extractor(None)  # the tenant has no AI settings
     response = await _upload(tenant_client)
     assert response.status_code == 503
-    assert "LLM_PROVIDER" in response.json()["detail"]
-
-
-def test_pdf_import_follows_the_llm_settings(monkeypatch) -> None:
-    settings = get_settings()
-    for provider, model in (("", ""), ("openai", ""), ("", "gpt-4o"), ("  ", "  ")):
-        monkeypatch.setattr(settings, "llm_provider", provider)
-        monkeypatch.setattr(settings, "llm_model", model)
-        assert (settings.pdf_import_enabled, get_invoice_extractor()) == (False, None)
-
-    # The model is named the LiteLLM way, `provider/model`, whichever way it is written
-    monkeypatch.setattr(settings, "llm_provider", "Anthropic")
-    monkeypatch.setattr(settings, "llm_model", "claude-sonnet-4-5")
-    assert settings.llm_model_id == "anthropic/claude-sonnet-4-5"
-    monkeypatch.setattr(settings, "llm_model", "anthropic/claude-sonnet-4-5")
-    assert settings.llm_model_id == "anthropic/claude-sonnet-4-5"
-
-    monkeypatch.setattr(settings, "llm_api_key", " sk-test ")
-    monkeypatch.setattr(settings, "llm_api_base", "")
-    extractor = get_invoice_extractor()
-    assert isinstance(extractor, LiteLLMInvoiceExtractor)
-    assert (extractor.model, extractor.api_key, extractor.api_base) == (
-        "anthropic/claude-sonnet-4-5",
-        "sk-test",
-        None,  # LiteLLM's default endpoint for the vendor
-    )
-    assert (extractor.reads_pdf, extractor.structured) == (True, True)
+    assert "AI provider" in response.json()["detail"]
 
 
 async def test_extract_rejects_what_is_not_a_pdf(
@@ -470,6 +444,52 @@ async def test_openai_gets_the_pdf_and_the_schema(vendor: FakeVendor) -> None:
     assert (prefix, base64.b64decode(data)) == ("data:application/pdf;base64", PDF)
     assert body["response_format"]["json_schema"]["schema"] == INVOICE_SCHEMA
     assert "addressed to" not in instructions["text"]  # no fiscal data, no customer hint
+
+
+async def test_azure_calls_the_deployment_of_the_resource(vendor: FakeVendor) -> None:
+    vendor.reply(_openai_reply(json.dumps(RAW)))
+    # A deployment may have any name: what it can do comes from the model it runs
+    extractor = LiteLLMInvoiceExtractor(
+        "azure/invoices-prod",
+        api_key="az-key",
+        api_base=vendor.url,
+        timeout=10,
+        retries=0,
+        capabilities_model="azure/gpt-4o",
+        params={"api_version": "2024-10-21"},
+    )
+    assert (extractor.reads_pdf, extractor.structured) == (True, True)
+    assert await extractor.extract(PDF, customer=None) == RAW
+
+    [(path, headers, body)] = vendor.requests
+    assert path == "/openai/deployments/invoices-prod/chat/completions?api-version=2024-10-21"
+    assert headers["api-key"] == "az-key"
+    assert body["messages"][1]["content"][0]["type"] == "file"  # the PDF itself
+
+
+async def test_bedrock_authenticates_with_its_api_key(vendor: FakeVendor) -> None:
+    vendor.reply(
+        {
+            "output": {"message": {"role": "assistant", "content": [{"text": json.dumps(RAW)}]}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 10, "outputTokens": 10, "totalTokens": 20},
+        }
+    )
+    extractor = LiteLLMInvoiceExtractor(
+        "bedrock/eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+        api_key="bedrock-key",
+        api_base=vendor.url,
+        timeout=10,
+        retries=0,
+        params={"aws_region_name": "eu-west-1"},
+    )
+    assert await extractor.extract(PDF, customer=CUSTOMER) == RAW
+
+    [(path, headers, body)] = vendor.requests
+    assert path == "/model/eu.anthropic.claude-sonnet-4-5-20250929-v1%3A0/converse"
+    assert headers["authorization"] == "Bearer bedrock-key"  # a Bedrock API key, no AWS keys
+    document = body["messages"][0]["content"][0]["document"]
+    assert base64.b64decode(document["source"]["bytes"]) == PDF
 
 
 async def test_models_that_cannot_read_pdfs_get_its_text(vendor: FakeVendor) -> None:

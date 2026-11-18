@@ -671,7 +671,8 @@ PDF_MAGIC = b"%PDF-"
         "Reads the supplier, number, dates, lines, VAT and IRPF of the uploaded invoice (any "
         "layout) with the configured LLM, so that the form can be pre-filled. **Nothing is "
         "stored**: review the draft and save it with `POST /api/received-invoice`. The PDF is "
-        "sent to the LLM vendor. `503` when PDF import is not configured, `413` when the file "
+        "sent to the AI vendor of the account's settings (`/api/ai-settings`). `503` when they "
+        "are not set up (or the stored API key cannot be decrypted), `413` when the file "
         "is too large, `422` when it cannot be used (`type`: `not_pdf`, `no_text` -- a scan "
         "and a model that cannot read PDF files --, or `not_invoice`), `502` when the LLM "
         "could not read it."
@@ -686,7 +687,7 @@ async def extract_received_invoice(
     if extractor is None:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            "PDF import is not configured on this server (LLM_PROVIDER / LLM_MODEL)",
+            "PDF import is not set up: choose an AI provider, model and API key in the settings",
         )
     limit = get_settings().invoice_pdf_max_bytes
     pdf = await file.read(limit + 1)

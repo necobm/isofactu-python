@@ -76,7 +76,7 @@ function importErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
     switch (error.status) {
       case 503:
-        return 'La importación desde PDF no está disponible: el servidor no tiene configurado el servicio de lectura de facturas.'
+        return 'La importación desde PDF no está disponible: revisa en los ajustes el proveedor de IA y tu API key.'
       case 413:
         return 'El PDF es demasiado grande para importarlo.'
       case 422: {
@@ -122,7 +122,7 @@ interface InvoiceFormProps {
   onSaved: () => void
   /** The invoice being edited (a draft or a received invoice) was deleted. */
   onDeleted: () => void
-  /** Open the account settings (fiscal data, serials), needed before saving / issuing. */
+  /** Open the account settings (fiscal data, serials, AI vendor), needed before saving / issuing / importing. */
   onOpenSettings: () => void
 }
 
@@ -162,6 +162,14 @@ export default function InvoiceForm({ kind, invoiceId, onBack, onSaved, onDelete
   const fiscalData = useApi((signal) => api.getFiscalData(signal), [])
   const account = fiscalData.status === 'success' ? fiscalData.data : null
   const missingFiscalData = fiscalData.status === 'success' && fiscalData.data === null
+
+  // -- received: PDF import needs the account's AI vendor (set up in the settings) -------
+  const aiSettings = useApi(
+    (signal) => (received && !editing ? api.getAiSettings(signal) : Promise.resolve(null)),
+    [received, editing],
+  )
+  // Unknown while loading (or if the check failed): the server has the last word
+  const pdfImportAvailable = aiSettings.status !== 'success' || aiSettings.data !== null
 
   // -- received: the supplier's address selects need the geo reference data -------------
   const supplierGeo = usePartyGeo(supplier, received)
@@ -658,6 +666,8 @@ export default function InvoiceForm({ kind, invoiceId, onBack, onSaved, onDelete
                   result={importResult}
                   error={importError}
                   computedTotal={totals.total}
+                  available={pdfImportAvailable}
+                  onConfigure={onOpenSettings}
                 />
               </div>
             )}

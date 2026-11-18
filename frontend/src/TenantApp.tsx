@@ -4,6 +4,7 @@ import { useAuth } from '@/lib/auth-context'
 import ClientForm from '@/pages/ClientForm'
 import Clients from '@/pages/Clients'
 import Dashboard from '@/pages/Dashboard'
+import AiVendorSettings from '@/pages/AiVendorSettings'
 import FiscalDataSettings from '@/pages/FiscalDataSettings'
 import SerialSettings from '@/pages/SerialSettings'
 import Invoices from '@/pages/Invoices'
@@ -24,7 +25,7 @@ const pageTitles: Record<Page, { title: string; subtitle: string }> = {
   facturasEmitidas: { title: 'Facturas emitidas', subtitle: 'Tus ingresos: gestiona y consulta tus borradores y las facturas emitidas a tus clientes.' },
   facturasRecibidas: { title: 'Facturas recibidas', subtitle: 'Tus gastos: registra las facturas de tus proveedores y corrígelas cuando lo necesites.' },
   clientes: { title: 'Directorio de Clientes', subtitle: 'Administra tu cartera de clientes.' },
-  ajustes: { title: 'Ajustes de la cuenta', subtitle: 'Tus datos fiscales (el emisor de tus facturas y el receptor de las que recibes) y las series de numeración.' },
+  ajustes: { title: 'Ajustes de la cuenta', subtitle: 'Tus datos fiscales (el emisor de tus facturas y el receptor de las que recibes), las series de numeración y la IA que lee tus facturas recibidas.' },
   createInvoice: { title: '', subtitle: '' },
   editInvoice: { title: '', subtitle: '' },
   createReceivedInvoice: { title: '', subtitle: '' },
@@ -88,7 +89,8 @@ export default function TenantApp() {
     setActivePage('ajustes')
   }
 
-  function fiscalDataSaved() {
+  /** Saving the fiscal data or the AI settings returns to the form that asked for them. */
+  function settingsSaved() {
     if (afterSettings) {
       setActivePage(afterSettings)
       setAfterSettings(null)
@@ -176,8 +178,9 @@ export default function TenantApp() {
         {activePage === 'clientes' && <Clients onEdit={editClient} />}
         {activePage === 'ajustes' && (
           <div className="space-y-6">
-            <FiscalDataSettings onSaved={fiscalDataSaved} />
+            <FiscalDataSettings onSaved={settingsSaved} />
             <SerialSettings />
+            <AiVendorSettings onSaved={settingsSaved} />
           </div>
         )}
       </main>

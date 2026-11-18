@@ -66,16 +66,14 @@ class Settings(BaseSettings):
     smtp_timeout: float = 10.0
     mail_from: str = ""
 
-    # -- LLM (PDF import of received invoices) -------------------------------------------
-    # Any vendor supported by LiteLLM (https://docs.litellm.ai/docs/providers). The PDF of
-    # the invoice is sent to that vendor. Leave LLM_PROVIDER / LLM_MODEL empty to disable.
-    llm_provider: str = Field(default="", description="anthropic | openai | gemini | ollama ...")
-    llm_model: str = Field(default="", description="The vendor's model name, e.g. gpt-4o")
-    # Optional: without it LiteLLM uses the vendor's usual variable (OPENAI_API_KEY...),
-    # and local models (Ollama) need none.
-    llm_api_key: str = ""
-    # Optional: a custom endpoint (Ollama server, Azure deployment, proxy...).
-    llm_api_base: str = ""
+    # -- secrets stored in the database (e.g. the tenants' AI API keys) --------------------
+    # Comma-separated Fernet keys: the first encrypts, all decrypt (rotation). Generate one
+    # with `python -m app.cli secrets generate-key`. Empty: a key derived from SECRET_KEY.
+    encryption_keys: str = Field(default="", repr=False)
+
+    # -- PDF import of received invoices ---------------------------------------------------
+    # The AI vendor, model and API key are set by each tenant in its settings (stored in
+    # the database, the key encrypted); the server only bounds the work.
     llm_timeout: float = Field(default=120.0, gt=0)
     invoice_pdf_max_bytes: int = Field(default=10 * 1024 * 1024, ge=1)
 
@@ -99,6 +97,21 @@ class Settings(BaseSettings):
     def _empty_secret_is_unset(cls, value: str) -> str:
         return value.strip() or INSECURE_SECRET_KEY
 
+    @field_validator("encryption_keys")
+    @classmethod
+    def _check_encryption_keys(cls, value: str) -> str:
+        from cryptography.fernet import Fernet
+
+        for key in (part.strip() for part in value.split(",") if part.strip()):
+            try:
+                Fernet(key)
+            except ValueError as exc:
+                raise ValueError(
+                    "ENCRYPTION_KEYS must hold Fernet keys (32 url-safe base64-encoded bytes); "
+                    "generate one with `python -m app.cli secrets generate-key`"
+                ) from exc
+        return value
+
     @model_validator(mode="after")
     def _refuse_insecure_production(self) -> "Settings":
         if self.app_env == "prod" and self.secret_key == INSECURE_SECRET_KEY:
@@ -120,17 +133,8 @@ class Settings(BaseSettings):
         return bool(self.smtp_host)
 
     @property
-    def llm_model_id(self) -> str:
-        """The model as LiteLLM names it: ``provider/model`` (``anthropic/claude-sonnet-4-5``),
-        or empty when no LLM is configured."""
-        provider, model = self.llm_provider.strip().lower(), self.llm_model.strip()
-        if not provider or not model:
-            return ""
-        return model if model.startswith(f"{provider}/") else f"{provider}/{model}"
-
-    @property
-    def pdf_import_enabled(self) -> bool:
-        return bool(self.llm_model_id)
+    def encryption_key_list(self) -> list[str]:
+        return [key.strip() for key in self.encryption_keys.split(",") if key.strip()]
 
 
 @lru_cache

@@ -9,12 +9,14 @@ pydantic-settings>=2.3,<3.0
 # authentication: password hashing + signed session cookies
 bcrypt>=4.1,<6.0
 PyJWT>=2.8,<3.0
+# encryption of the secrets stored in the database (the tenants' AI API keys)
+cryptography>=43,<51
 # countries / provinces (ISO 3166) for address forms
 pycountry>=24.6,<27.0
 # uploads (multipart form data, e.g. the PDF of a received invoice)
 python-multipart>=0.0.9,<1.0
-# reading received invoices from PDF: any LLM vendor through LiteLLM; pypdf gives models that
-# cannot read PDF files the text of the invoice instead
+# reading received invoices from PDF with each tenant's AI vendor, through LiteLLM (which also
+# provides the model catalogue); pypdf gives models that cannot read PDF files the text instead
 litellm>=1.106,<2.0
 pypdf>=5.0,<7.0
 # exporting issued invoices as PDF

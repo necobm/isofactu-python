@@ -81,12 +81,10 @@ services:
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_STARTTLS: ${SMTP_STARTTLS:-false}
       MAIL_FROM: ${MAIL_FROM:-}
-      # LLM reading received invoices from PDF (any LiteLLM vendor). Empty provider or
-      # model = PDF import disabled.
-      LLM_PROVIDER: ${LLM_PROVIDER:-}
-      LLM_MODEL: ${LLM_MODEL:-}
-      LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_API_BASE: ${LLM_API_BASE:-}
+      # Encryption of the secrets stored in the database (the tenants' AI API keys)
+      ENCRYPTION_KEYS: ${ENCRYPTION_KEYS:-}
+      # PDF import of received invoices: each tenant sets its AI vendor, model and API key
+      # in its settings; the server only bounds how long a PDF may take.
       LLM_TIMEOUT: ${LLM_TIMEOUT:-120}
     ports:
       - "${BACKEND_PORT:-8000}:8000"

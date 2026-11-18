@@ -2,9 +2,10 @@
 
 Supplier invoices come in any layout (and are sometimes scans), so instead of parsing their
 text with rules the PDF is handed to an LLM, which answers with the data we need as JSON
-following ``INVOICE_SCHEMA``. The vendor is whatever LiteLLM supports (Anthropic, OpenAI,
-Gemini, Mistral, a local Ollama...), chosen with ``LLM_PROVIDER`` / ``LLM_MODEL``. Nothing
-is stored: the result is a *draft* the user reviews in the form before saving.
+following ``INVOICE_SCHEMA``. Each tenant chooses the vendor, model and API key in its
+settings (AI module: Gemini, Anthropic, OpenAI, Azure OpenAI, Amazon Bedrock), and the call
+goes through LiteLLM. Nothing is stored: the result is a *draft* the user reviews in the form
+before saving.
 
 Two stages, kept apart on purpose:
 
@@ -22,14 +23,21 @@ import base64
 import io
 import json
 import logging
-import os
 import re
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
-from functools import lru_cache
-from typing import Any, Protocol
+from typing import Annotated, Any, Protocol
 
+from fastapi import Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.accounts.deps import CurrentTenant
+from app.ai.providers import import_litellm
+from app.ai.repository import AiSettingsRepository
+from app.ai.service import connection_for
 from app.core.config import get_settings
+from app.core.crypto import SecretDecryptionError, get_secret_box
+from app.core.database import get_session
 from app.geo import service as geo
 from app.invoicing import spanish_ids
 from app.invoicing.document_type import DocumentType
@@ -249,18 +257,6 @@ def _json_object(content: Any) -> dict[str, Any]:
     return data
 
 
-def _quiet_litellm() -> Any:
-    """Import LiteLLM (slow: only once PDF import is used), without it fetching its model
-    metadata from GitHub at run time: the copy bundled with the package is used instead.
-    Set those variables to ``False`` in the environment to get the live data back."""
-    os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
-    os.environ.setdefault("LITELLM_LOCAL_ANTHROPIC_BETA_HEADERS", "True")
-    import litellm
-
-    litellm.suppress_debug_info = True
-    return litellm
-
-
 class LiteLLMInvoiceExtractor:
     """Reads the invoice with any LLM LiteLLM supports.
 
@@ -278,13 +274,20 @@ class LiteLLMInvoiceExtractor:
         api_base: str | None,
         timeout: float,
         retries: int = 2,
+        capabilities_model: str | None = None,
+        params: dict[str, Any] | None = None,
     ) -> None:
         self.model = model
         self.api_key = api_key or None
         self.api_base = api_base or None
         self.timeout = timeout
         self.retries = retries
-        self.litellm = _quiet_litellm()
+        # The catalogue name of the model, when the call uses another one (an Azure
+        # deployment runs one of the catalogue's models under a name of its own)
+        self.capabilities_model = capabilities_model or model
+        # Vendor-specific parameters: `api_version` (Azure), `aws_region_name` (Bedrock)
+        self.params = dict(params or {})
+        self.litellm = import_litellm()
         self.reads_pdf = self._supports("supports_pdf_input")
         self.structured = self._supports("supports_response_schema")
 
@@ -293,7 +296,7 @@ class LiteLLMInvoiceExtractor:
         from litellm import utils
 
         try:
-            return bool(getattr(utils, capability)(model=self.model))
+            return bool(getattr(utils, capability)(model=self.capabilities_model))
         except Exception:  # noqa: BLE001 -- unknown model / provider: be conservative
             return False
 
@@ -332,6 +335,7 @@ class LiteLLMInvoiceExtractor:
                 api_key=self.api_key,
                 api_base=self.api_base,
                 drop_params=True,  # a vendor that does not take a parameter simply ignores it
+                **self.params,
                 **options,
             )
         except Exception as exc:  # noqa: BLE001 -- LiteLLM raises a different class per vendor
@@ -345,24 +349,29 @@ class LiteLLMInvoiceExtractor:
         return _json_object(choice.message.content)
 
 
-@lru_cache
-def _litellm_extractor(
-    model: str, api_key: str, api_base: str, timeout: float
-) -> LiteLLMInvoiceExtractor:
-    return LiteLLMInvoiceExtractor(model, api_key=api_key, api_base=api_base, timeout=timeout)
-
-
-def get_invoice_extractor() -> InvoiceExtractor | None:
-    """FastAPI dependency: the configured extractor, or None when PDF import is disabled
-    (no ``LLM_PROVIDER`` / ``LLM_MODEL``)."""
-    settings = get_settings()
-    if not settings.pdf_import_enabled:
+async def get_invoice_extractor(
+    tenant: CurrentTenant, session: Annotated[AsyncSession, Depends(get_session)]
+) -> InvoiceExtractor | None:
+    """FastAPI dependency: an extractor with the tenant's AI settings, or None while the
+    tenant has not set them up (PDF import unavailable). `503` when the stored API key can no
+    longer be decrypted (the server's encryption keys changed): it must be entered again."""
+    settings = await AiSettingsRepository(session, tenant.id).get()
+    if settings is None:
         return None
-    return _litellm_extractor(
-        settings.llm_model_id,
-        settings.llm_api_key.strip(),
-        settings.llm_api_base.strip(),
-        settings.llm_timeout,
+    try:
+        connection = connection_for(settings, get_secret_box())
+    except SecretDecryptionError as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "The API key of the AI settings cannot be decrypted: enter it again",
+        ) from exc
+    return LiteLLMInvoiceExtractor(
+        connection.model,
+        api_key=connection.api_key,
+        api_base=connection.api_base,
+        timeout=get_settings().llm_timeout,
+        capabilities_model=connection.catalog_model,
+        params=connection.params,
     )
 
 
