@@ -392,3 +392,23 @@ export interface AiSettingsInput {
   deployment?: string
   region?: string
 }
+
+/** How testing AI settings ended (`POST /api/ai-settings/test`). */
+export type AiCheckOutcome =
+  | 'ok'
+  | 'auth'
+  | 'permission'
+  | 'model'
+  | 'quota'
+  | 'timeout'
+  | 'unreachable'
+  | 'bad_request'
+  | 'vendor_error'
+
+export interface AiConnectionCheck {
+  ok: boolean
+  outcome: AiCheckOutcome
+  /** The vendor's explanation of a failure (the key scrubbed out). */
+  detail: string | null
+  latencyMs: number
+}

@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 from pydantic import Field, field_validator, model_validator
 
 from app.ai.providers import PROVIDERS
+from app.ai.service import CheckOutcome
 from app.core.schemas import ApiModel
 
 # Azure OpenAI / AI Foundry resource endpoints. Anything else is refused: the server calls
@@ -133,3 +134,19 @@ class AiSettingsRead(ApiModel):
         description="Whether the model reads PDF files (scans included) or only their text"
     )
     updated_at: datetime
+
+
+class ConnectionCheckRead(ApiModel):
+    ok: bool
+    outcome: CheckOutcome = Field(
+        description=(
+            "`ok`; `auth` (the key was rejected), `permission` (the key may not use this model "
+            "or resource), `model` (no such model / deployment), `quota` (rate limit or no "
+            "credit), `timeout`, `unreachable`, `bad_request` (e.g. a wrong API version or "
+            "region) or `vendor_error`"
+        )
+    )
+    detail: str | None = Field(
+        description="The vendor's explanation of a failure (the key scrubbed out)"
+    )
+    latency_ms: int = Field(description="How long the vendor took to answer")

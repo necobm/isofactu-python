@@ -8,11 +8,8 @@ real against a local HTTP server posing as each vendor's API, to check what Lite
 
 import base64
 import json
-import threading
-from collections.abc import Iterator
 from datetime import date
 from decimal import Decimal
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import pytest
@@ -33,6 +30,7 @@ from app.invoicing.extraction import (
 )
 from app.invoicing.models import FiscalData
 from app.invoicing.value_objects import Address, IdentificationDocument, Issuer
+from tests.fake_vendor import FakeVendor, anthropic_reply, openai_reply
 
 PDF = b"%PDF-1.7\n% a supplier invoice\n%%EOF"
 
@@ -330,87 +328,17 @@ def text_pdf(*lines: str) -> bytes:
     return pdf
 
 
-class FakeVendor:
-    """A local HTTP server answering like a vendor's API, recording what it receives."""
-
-    def __init__(self) -> None:
-        self.requests: list[tuple[str, dict[str, str], dict[str, Any]]] = []
-        self.replies: list[tuple[int, dict[str, Any]]] = []
-        vendor = self
-
-        class Handler(BaseHTTPRequestHandler):
-            def do_POST(self) -> None:  # noqa: N802 -- http.server API
-                body = json.loads(self.rfile.read(int(self.headers["content-length"])))
-                vendor.requests.append((self.path, dict(self.headers), body))
-                status, reply = vendor.replies.pop(0)
-                data = json.dumps(reply).encode()
-                self.send_response(status)
-                self.send_header("content-type", "application/json")
-                self.send_header("content-length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
-
-            def log_message(self, *args: Any) -> None:
-                pass
-
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.url = f"http://127.0.0.1:{self.server.server_port}"
-
-    def reply(self, body: dict[str, Any], status: int = 200) -> None:
-        self.replies.append((status, body))
-
-
-@pytest.fixture
-def vendor() -> Iterator[FakeVendor]:
-    fake = FakeVendor()
-    thread = threading.Thread(target=fake.server.serve_forever, daemon=True)
-    thread.start()
-    yield fake
-    fake.server.shutdown()
-    fake.server.server_close()
-
-
 def _extractor(model: str, vendor: FakeVendor) -> LiteLLMInvoiceExtractor:
     return LiteLLMInvoiceExtractor(
         model, api_key="sk-test", api_base=vendor.url, timeout=10, retries=0
     )
 
 
-def _anthropic_reply(text: str) -> dict[str, Any]:
-    return {
-        "id": "msg_1",
-        "type": "message",
-        "role": "assistant",
-        "model": "claude",
-        "content": [{"type": "text", "text": text}],
-        "stop_reason": "end_turn",
-        "stop_sequence": None,
-        "usage": {"input_tokens": 10, "output_tokens": 10},
-    }
-
-
-def _openai_reply(content: str) -> dict[str, Any]:
-    return {
-        "id": "chatcmpl-1",
-        "object": "chat.completion",
-        "created": 1,
-        "model": "gpt",
-        "choices": [
-            {
-                "index": 0,
-                "finish_reason": "stop",
-                "message": {"role": "assistant", "content": content},
-            }
-        ],
-        "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
-    }
-
-
 CUSTOMER = Issuer(full_name="Jesús Freelance", document_number="12345678Z")
 
 
 async def test_anthropic_gets_the_pdf_and_the_schema(vendor: FakeVendor) -> None:
-    vendor.reply(_anthropic_reply(json.dumps(RAW)))
+    vendor.reply(anthropic_reply(json.dumps(RAW)))
     extractor = _extractor("anthropic/claude-sonnet-4-5", vendor)
     assert await extractor.extract(PDF, customer=CUSTOMER) == RAW
 
@@ -430,7 +358,7 @@ async def test_anthropic_gets_the_pdf_and_the_schema(vendor: FakeVendor) -> None
 
 async def test_openai_gets_the_pdf_and_the_schema(vendor: FakeVendor) -> None:
     # Answers wrapped in a code fence are read too
-    vendor.reply(_openai_reply(f"```json\n{json.dumps(RAW)}\n```"))
+    vendor.reply(openai_reply(f"```json\n{json.dumps(RAW)}\n```"))
     extractor = _extractor("openai/gpt-4o", vendor)
     assert await extractor.extract(PDF, customer=None) == RAW
 
@@ -447,7 +375,7 @@ async def test_openai_gets_the_pdf_and_the_schema(vendor: FakeVendor) -> None:
 
 
 async def test_azure_calls_the_deployment_of_the_resource(vendor: FakeVendor) -> None:
-    vendor.reply(_openai_reply(json.dumps(RAW)))
+    vendor.reply(openai_reply(json.dumps(RAW)))
     # A deployment may have any name: what it can do comes from the model it runs
     extractor = LiteLLMInvoiceExtractor(
         "azure/invoices-prod",
@@ -493,7 +421,7 @@ async def test_bedrock_authenticates_with_its_api_key(vendor: FakeVendor) -> Non
 
 
 async def test_models_that_cannot_read_pdfs_get_its_text(vendor: FakeVendor) -> None:
-    vendor.reply(_openai_reply(json.dumps(RAW)))
+    vendor.reply(openai_reply(json.dumps(RAW)))
     # Unknown to LiteLLM: assumed to read neither PDF files nor structured output
     extractor = _extractor("openai/some-local-model", vendor)
     assert (extractor.reads_pdf, extractor.structured) == (False, False)
@@ -530,11 +458,11 @@ async def test_vendor_failures(vendor: FakeVendor) -> None:
     with pytest.raises(ExtractionError):
         await extractor.extract(PDF, customer=None)
 
-    vendor.reply(_openai_reply("Sorry, I cannot read this document."))
+    vendor.reply(openai_reply("Sorry, I cannot read this document."))
     with pytest.raises(ExtractionError, match="JSON"):
         await extractor.extract(PDF, customer=None)
 
-    vendor.reply(_openai_reply("[1, 2, 3]"))
+    vendor.reply(openai_reply("[1, 2, 3]"))
     with pytest.raises(ExtractionError):
         await extractor.extract(PDF, customer=None)
 

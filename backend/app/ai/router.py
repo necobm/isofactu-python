@@ -13,7 +13,15 @@ from app.accounts.deps import CurrentTenant
 from app.ai.models import AiSettings
 from app.ai.providers import PROVIDERS, CatalogModel, models
 from app.ai.repository import AiSettingsRepository
-from app.ai.schemas import AiSettingsRead, AiSettingsWrite, ModelRead, ProviderRead
+from app.ai.schemas import (
+    AiSettingsRead,
+    AiSettingsWrite,
+    ConnectionCheckRead,
+    ModelRead,
+    ProviderRead,
+)
+from app.ai.service import build_connection, check_connection
+from app.core.config import get_settings
 from app.core.crypto import SecretDecryptionError, get_secret_box
 from app.core.database import get_session
 
@@ -22,6 +30,8 @@ ai_router = APIRouter(prefix="/ai-settings", tags=["AI settings"])
 
 # Keys shorter than this do not reveal their last characters
 HINT_MIN_LENGTH = 12
+# A connection check is a tiny request: no need to wait as long as for a whole invoice
+CHECK_TIMEOUT_SECONDS = 30.0
 
 
 async def _models(provider_id: str) -> tuple[CatalogModel, ...]:
@@ -58,18 +68,30 @@ async def _read(settings: AiSettings) -> AiSettingsRead:
     )
 
 
-def _can_keep_key(settings: AiSettings | None, payload: AiSettingsWrite) -> bool:
-    """Whether the stored key still applies: same vendor (and, on Azure, same resource:
-    its keys belong to it), and the server can still decrypt it."""
+def _stored_key(settings: AiSettings | None, payload: AiSettingsWrite) -> str | None:
+    """The stored key, when it still applies to the payload: same vendor (and, on Azure,
+    same resource: its keys belong to it), and the server can still decrypt it."""
     if settings is None or settings.provider != payload.provider:
-        return False
+        return None
     if settings.endpoint != payload.endpoint:
-        return False
+        return None
     try:
-        get_secret_box().decrypt(settings.api_key_encrypted)
+        return get_secret_box().decrypt(settings.api_key_encrypted)
     except SecretDecryptionError:
-        return False
-    return True
+        return None
+
+
+async def _check_model(payload: AiSettingsWrite) -> None:
+    if payload.model not in {m.id for m in await _models(payload.provider)}:
+        raise _validation_error("model", "model is not one of the provider's models")
+
+
+def _api_key(settings: AiSettings | None, payload: AiSettingsWrite) -> str:
+    """The key to use: the one in the payload, else the stored one if it still applies."""
+    key = payload.api_key or _stored_key(settings, payload)
+    if key is None:
+        raise _validation_error("apiKey", "apiKey is required")
+    return key
 
 
 @ai_router.get(
@@ -135,17 +157,10 @@ async def get_ai_settings(tenant: CurrentTenant, session: SessionDep) -> AiSetti
 async def put_ai_settings(
     tenant: CurrentTenant, payload: AiSettingsWrite, session: SessionDep
 ) -> AiSettingsRead:
-    if payload.model not in {m.id for m in await _models(payload.provider)}:
-        raise _validation_error("model", "model is not one of the provider's models")
-
+    await _check_model(payload)
     repo = AiSettingsRepository(session, tenant.id)
     settings = await repo.get()
-    if payload.api_key is not None:
-        encrypted = get_secret_box().encrypt(payload.api_key)
-    elif _can_keep_key(settings, payload):
-        encrypted = settings.api_key_encrypted  # type: ignore[union-attr] -- checked
-    else:
-        raise _validation_error("apiKey", "apiKey is required")
+    encrypted = get_secret_box().encrypt(_api_key(settings, payload))
     fields = payload.model_dump(exclude={"api_key"})
     if settings is None:
         settings = await repo.add(AiSettings(owner=tenant, api_key_encrypted=encrypted, **fields))
@@ -156,6 +171,40 @@ async def put_ai_settings(
     await session.commit()
     await session.refresh(settings)
     return await _read(settings)
+
+
+@ai_router.post(
+    "/test",
+    response_model=ConnectionCheckRead,
+    summary="Test AI settings",
+    description=(
+        "Checks that the given settings work -- the key, the model and (Azure / Bedrock) the "
+        "endpoint or region -- with a minimal request to the vendor, before or after saving "
+        "them: the body is the same as for `PUT`, and nothing is stored. Without `apiKey` the "
+        "stored key is used (under the same conditions as `PUT`). Answers `200` whatever the "
+        "vendor says: `ok` and `outcome` tell how the check went. It is a real API call, "
+        "billed to the key."
+    ),
+)
+async def test_ai_settings(
+    tenant: CurrentTenant, payload: AiSettingsWrite, session: SessionDep
+) -> ConnectionCheckRead:
+    await _check_model(payload)
+    settings = await AiSettingsRepository(session, tenant.id).get()
+    connection = build_connection(
+        provider=payload.provider,
+        model=payload.model,
+        api_key=_api_key(settings, payload),
+        endpoint=payload.endpoint,
+        api_version=payload.api_version,
+        deployment=payload.deployment,
+        region=payload.region,
+    )
+    timeout = min(CHECK_TIMEOUT_SECONDS, get_settings().llm_timeout)
+    result = await check_connection(connection, timeout=timeout)
+    return ConnectionCheckRead(
+        ok=result.ok, outcome=result.outcome, detail=result.detail, latency_ms=result.latency_ms
+    )
 
 
 @ai_router.delete(

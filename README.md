@@ -231,6 +231,7 @@ session (see [Accounts & authentication](#accounts--authentication)). Invoicing 
 | DELETE | `/api/received-invoice/{id}`            | ADMIN        | Delete a received invoice (always allowed)     |
 | GET    | `/api/ai-settings`                      | ADMIN        | The account's AI vendor and model (the API key is never returned), `null` until set up |
 | PUT    | `/api/ai-settings`                      | ADMIN        | Set the AI vendor, model and API key (stored encrypted; omit `apiKey` to keep it) |
+| POST   | `/api/ai-settings/test`                 | ADMIN        | Test AI settings (saved or not; same body as `PUT`) with a minimal request to the vendor → `{ok, outcome, detail, latencyMs}` |
 | DELETE | `/api/ai-settings`                      | ADMIN        | Forget the AI settings (PDF import becomes unavailable) |
 | GET    | `/api/ai-settings/providers`            | ADMIN        | The AI vendors to choose from |
 | GET    | `/api/ai-settings/providers/{p}/models` | ADMIN        | The vendor's models (those that read PDF files first) |
@@ -434,6 +435,27 @@ endpoint answers `503`). Nothing about the vendor is configured on the server:
 | API key | The tenant's own key with that vendor. **Stored encrypted** (see [Encryption of stored secrets](#encryption-of-stored-secrets)) and never returned by the API: the settings only show its last four characters. Leave the field empty to keep it; it is required again when the provider (or the Azure resource) changes. |
 | Azure only | The resource endpoint (`https://<resource>.openai.azure.com`; only Azure hosts are accepted, since the server calls that URL), the deployment name (when it differs from the model's) and, optionally, the API version. |
 | Bedrock only | The AWS region. The key is a [Bedrock API key](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys.html) (no AWS access keys). |
+
+**Probar conexión.** Next to *Guardar*, this button checks the values in the form — saved or
+not, so a key can be tried before saving it — with a minimal request to the vendor (a one-word
+answer, no retries, 30 s at most; it is a real call, billed to the key). Without a new key the
+stored one is used, under the same conditions as saving. Nothing is stored. The result says
+whether it worked and, if not, why, with what to do about it:
+
+| `outcome` | Meaning |
+|---|---|
+| `ok` | The key, the model and the endpoint / region work |
+| `auth` | The vendor rejected the key |
+| `permission` | The key is valid but may not use this model (e.g. no model access granted on Bedrock) |
+| `model` | No such model for this key — on Azure, no deployment with that name; on Bedrock, not in that region |
+| `quota` | Rate limit reached, or no credit left |
+| `timeout` / `unreachable` | The vendor did not answer in time / could not be reached (e.g. a wrong Azure endpoint) |
+| `bad_request` | The vendor refused the request (e.g. an unsupported Azure API version) |
+| `vendor_error` | Anything else the vendor failed with |
+
+Vendors disagree on status codes (a key without access to a model is a 403 on Anthropic, a
+missing credit a 400...), so the vendor's message is looked at too (`app/ai/service.py`,
+`classify_error`). The vendor's own message comes along as `detail`, with the key scrubbed out.
 
 The server only bounds the work:
 

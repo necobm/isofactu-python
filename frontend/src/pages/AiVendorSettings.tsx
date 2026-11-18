@@ -1,7 +1,15 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import { api, ApiError, type AiProviderId, type AiSettings, type AiSettingsInput } from '@/api'
+import {
+  api,
+  ApiError,
+  type AiConnectionCheck,
+  type AiProvider,
+  type AiProviderId,
+  type AiSettings,
+  type AiSettingsInput,
+} from '@/api'
 import ConfirmDialog from '@/components/ConfirmDialog'
-import { Field, FormMessage, INPUT_CLASS, PRIMARY_BUTTON_CLASS } from '@/components/form'
+import { Field, FormMessage, INPUT_CLASS, PRIMARY_BUTTON_CLASS, SECONDARY_BUTTON_CLASS } from '@/components/form'
 import SearchSelect, { type SelectOption } from '@/components/SearchSelect'
 import { useApi } from '@/lib/useApi'
 
@@ -51,6 +59,78 @@ function sameEndpoint(a: string, b: string): boolean {
   return normalise(a) === normalise(b)
 }
 
+/** What a failed connection check means, and what to do about it. */
+function checkFailure(check: AiConnectionCheck, provider: AiProvider | null): string {
+  const azure = provider?.needsEndpoint === true
+  const bedrock = provider?.needsRegion === true
+  switch (check.outcome) {
+    case 'auth':
+      return 'El proveedor ha rechazado la API key. Comprueba que la has copiado completa y que sigue activa.'
+    case 'permission':
+      return bedrock
+        ? 'La API key es válida, pero no tiene acceso a este modelo. Solicita el acceso al modelo en la consola de Bedrock para esa región.'
+        : 'La API key es válida, pero no tiene permiso para usar este modelo. Revisa los permisos de la clave en tu cuenta del proveedor.'
+    case 'model':
+      return azure
+        ? 'El recurso de Azure no tiene ninguna implementación con ese nombre. Comprueba el nombre de la implementación.'
+        : bedrock
+          ? 'El modelo no está disponible en la región elegida. Prueba con otra región o con otro modelo.'
+          : 'El proveedor no encuentra el modelo para tu cuenta. Prueba con otro modelo.'
+    case 'quota':
+      return 'Has superado el límite de uso o no queda crédito en tu cuenta del proveedor. Revisa tu plan y la facturación.'
+    case 'timeout':
+      return 'El proveedor no ha respondido a tiempo. Inténtalo de nuevo en unos minutos.'
+    case 'unreachable':
+      return azure
+        ? 'No se ha podido conectar con el recurso de Azure. Comprueba el punto de conexión.'
+        : 'No se ha podido conectar con el proveedor. Inténtalo de nuevo más tarde.'
+    case 'bad_request':
+      return azure
+        ? 'El proveedor ha rechazado la petición. Comprueba la versión de la API (o déjala vacía).'
+        : bedrock
+          ? 'El proveedor ha rechazado la petición. Comprueba la región y el modelo.'
+          : 'El proveedor ha rechazado la petición. Revisa el modelo elegido.'
+    default:
+      return 'El proveedor ha devuelto un error. Inténtalo de nuevo más tarde.'
+  }
+}
+
+/** The result of «Probar conexión». */
+function ConnectionResult({
+  check,
+  provider,
+  model,
+  unsaved,
+}: {
+  check: AiConnectionCheck
+  provider: AiProvider | null
+  model: string
+  unsaved: boolean
+}) {
+  if (check.ok) {
+    return (
+      <FormMessage tone="success">
+        Conexión correcta: {provider?.label ?? 'el proveedor'} ha respondido con {model} en{' '}
+        {(check.latencyMs / 1000).toLocaleString('es-ES', { maximumFractionDigits: 1 })} s.
+        {unsaved && ' Guarda la configuración para usarla al importar facturas.'}
+      </FormMessage>
+    )
+  }
+  return (
+    <div role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 space-y-1">
+      <p>
+        <strong className="font-semibold">La conexión ha fallado.</strong> {checkFailure(check, provider)}
+      </p>
+      {check.detail && (
+        <details className="text-xs text-rose-600">
+          <summary className="cursor-pointer select-none">Detalle del proveedor</summary>
+          <p className="mt-1 break-words font-mono">{check.detail}</p>
+        </details>
+      )}
+    </div>
+  )
+}
+
 interface AiVendorSettingsProps {
   /** Called after a successful save (e.g. to go back to the invoice being recorded). */
   onSaved?: () => void
@@ -68,6 +148,9 @@ export default function AiVendorSettings({ onSaved }: AiVendorSettingsProps) {
   const [loaded, setLoaded] = useState(false)
   const [busy, setBusy] = useState(false)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [testing, setTesting] = useState(false)
+  // The last connection check, for the values currently in the form (cleared on any change)
+  const [check, setCheck] = useState<AiConnectionCheck | null>(null)
   const [message, setMessage] = useState<{ tone: 'success' | 'error'; text: string } | null>(null)
 
   useEffect(() => {
@@ -104,13 +187,23 @@ export default function AiVendorSettings({ onSaved }: AiVendorSettingsProps) {
     saved.provider !== form.provider ||
     (provider?.needsEndpoint === true && !sameEndpoint(saved.endpoint, form.endpoint))
 
+  // Something in the form differs from what is stored
+  const unsaved =
+    !saved ||
+    form.apiKey.trim() !== '' ||
+    (['provider', 'model', 'endpoint', 'apiVersion', 'deployment', 'region'] as const).some(
+      (field) => form[field].trim() !== saved[field],
+    )
+
   function set<K extends keyof FormState>(field: K, value: FormState[K]) {
     setForm((prev) => ({ ...prev, [field]: value }))
     setMessage(null)
+    setCheck(null)
   }
 
   function chooseProvider(id: AiProviderId | '') {
     setMessage(null)
+    setCheck(null)
     setForm((prev) => {
       if (saved && id === saved.provider) return { ...fromSettings(saved), apiKey: prev.apiKey }
       return { ...EMPTY, provider: id, apiKey: prev.apiKey }
@@ -162,6 +255,26 @@ export default function AiVendorSettings({ onSaved }: AiVendorSettingsProps) {
     }
   }
 
+  /** Tries the values in the form (saved or not) against the vendor; nothing is stored. */
+  async function testConnection() {
+    const problem = validate()
+    if (problem) {
+      setCheck(null)
+      setMessage({ tone: 'error', text: problem })
+      return
+    }
+    setTesting(true)
+    setMessage(null)
+    setCheck(null)
+    try {
+      setCheck(await api.testAiSettings(toInput()))
+    } catch (err) {
+      setMessage({ tone: 'error', text: describe(err, 'No se pudo probar la conexión. Inténtalo de nuevo.') })
+    } finally {
+      setTesting(false)
+    }
+  }
+
   async function remove() {
     setBusy(true)
     try {
@@ -177,7 +290,7 @@ export default function AiVendorSettings({ onSaved }: AiVendorSettingsProps) {
     }
   }
 
-  const disabled = busy || !loaded || providers.status !== 'success'
+  const disabled = busy || testing || !loaded || providers.status !== 'success'
 
   return (
     <section className="bg-white rounded-xl border border-slate-100 shadow-sm" aria-label="Inteligencia artificial">
@@ -335,10 +448,29 @@ export default function AiVendorSettings({ onSaved }: AiVendorSettingsProps) {
           />
         )}
 
+        {check && <ConnectionResult check={check} provider={provider} model={form.model} unsaved={unsaved} />}
+
         <div className="flex items-center justify-between gap-3 pt-1">
-          <button type="submit" disabled={disabled} className={PRIMARY_BUTTON_CLASS}>
-            {busy ? 'Guardando…' : 'Guardar configuración de IA'}
-          </button>
+          <div className="flex flex-wrap items-center gap-3">
+            <button type="submit" disabled={disabled} className={PRIMARY_BUTTON_CLASS}>
+              {busy ? 'Guardando…' : 'Guardar configuración de IA'}
+            </button>
+            <button
+              type="button"
+              onClick={testConnection}
+              disabled={disabled || !form.provider}
+              className={`${SECONDARY_BUTTON_CLASS} inline-flex items-center gap-2`}
+              title="Envía una petición mínima al proveedor con estos datos (cuenta como un uso de tu API key)"
+            >
+              {testing && (
+                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" aria-hidden="true">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                </svg>
+              )}
+              {testing ? 'Probando…' : 'Probar conexión'}
+            </button>
+          </div>
           {saved && (
             <button
               type="button"
@@ -368,10 +500,10 @@ export default function AiVendorSettings({ onSaved }: AiVendorSettingsProps) {
   )
 }
 
-function describe(error: unknown): string {
+function describe(error: unknown, fallback = 'No se pudo guardar la configuración de IA. Inténtalo de nuevo.'): string {
   if (error instanceof ApiError) {
     if (error.status === 422) return `Revisa los datos: ${error.message}`
     return error.message
   }
-  return 'No se pudo guardar la configuración de IA. Inténtalo de nuevo.'
+  return fallback
 }

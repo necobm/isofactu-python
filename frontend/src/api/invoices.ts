@@ -1,5 +1,6 @@
 import { download, request } from './client'
 import type {
+  AiConnectionCheck,
   AiModel,
   AiProvider,
   AiProviderId,
@@ -116,6 +117,14 @@ export const api = {
   /** `apiKey` may be left out to keep the stored one (the server never returns it). */
   saveAiSettings: (input: AiSettingsInput) =>
     request<AiSettings>('/api/ai-settings', { method: 'PUT', body: input }),
+
+  /**
+   * Checks that settings work (key, model, endpoint / region) with a minimal request to the
+   * vendor, saved or not; nothing is stored. Without `apiKey` the stored key is used. The
+   * vendor's verdict comes in the result (`ok`, `outcome`), not as an error.
+   */
+  testAiSettings: (input: AiSettingsInput) =>
+    request<AiConnectionCheck>('/api/ai-settings/test', { method: 'POST', body: input }),
 
   /** Forgets the AI vendor and its key: PDF import becomes unavailable. */
   deleteAiSettings: () => request<void>('/api/ai-settings', { method: 'DELETE' }),

@@ -122,6 +122,15 @@ async def session(engine) -> AsyncIterator[AsyncSession]:
 
 
 @pytest.fixture
+def vendor():
+    """A local server posing as an AI vendor's API (see `tests/fake_vendor.py`)."""
+    from tests.fake_vendor import running_vendor
+
+    with running_vendor() as fake:
+        yield fake
+
+
+@pytest.fixture
 def mailer() -> InMemoryMailer:
     """Captures the e-mails the application sends during the test (`mailer.outbox`)."""
     return InMemoryMailer()
