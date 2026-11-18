@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { api, type Invoice, type InvoiceKind, type InvoiceState } from '@/api'
 import { useApi } from '@/lib/useApi'
+import DeleteInvoiceDialog from './DeleteInvoiceDialog'
+import { isDeletable } from './deletion'
 import InvoiceRow, { INVOICE_TABLE_COLUMNS } from './InvoiceRow'
 
 interface InvoiceSectionProps {
@@ -43,6 +45,8 @@ export default function InvoiceSection({
 }: InvoiceSectionProps) {
   const [page, setPage] = useState(0)
   const [expandedId, setExpandedId] = useState<number | null>(null)
+  // The invoice whose deletion is being confirmed (drafts and received invoices)
+  const [deleting, setDeleting] = useState<Invoice | null>(null)
 
   const invoices = useApi(
     (signal) => {
@@ -61,6 +65,13 @@ export default function InvoiceSection({
   const from = total === 0 ? 0 : page * pageSize + 1
   const to = Math.min(total, (page + 1) * pageSize)
   const showPagination = alwaysShowPagination || pageCount > 1
+
+  function deleted() {
+    setDeleting(null)
+    // The last invoice of a page: go back one page (which reloads); otherwise reload this one
+    if (items.length === 1 && page > 0) setPage((p) => p - 1)
+    else invoices.reload()
+  }
 
   return (
     <section
@@ -136,6 +147,7 @@ export default function InvoiceSection({
                 expandable={onSelect === undefined}
                 expanded={expandedId === invoice.id}
                 onChanged={invoices.reload}
+                onDelete={isDeletable(invoice) ? () => setDeleting(invoice) : undefined}
                 onActivate={() =>
                   onSelect
                     ? onSelect(invoice)
@@ -172,6 +184,9 @@ export default function InvoiceSection({
             </button>
           </div>
         </div>
+      )}
+      {deleting && (
+        <DeleteInvoiceDialog invoice={deleting} onDeleted={deleted} onCancel={() => setDeleting(null)} />
       )}
     </section>
   )

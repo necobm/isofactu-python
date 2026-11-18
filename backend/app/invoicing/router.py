@@ -6,8 +6,9 @@ data: the repositories are bound to the current user.
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from app.accounts.deps import CurrentTenant
 from app.accounts.models import User
@@ -25,6 +26,7 @@ from app.invoicing.extraction import (
 from app.invoicing.invoice_kind import InvoiceKind
 from app.invoicing.invoice_state import InvoiceState
 from app.invoicing.models import FiscalData, Invoice, InvoiceLine, Serial, Subject
+from app.invoicing.pdf import pdf_filename, render_invoice_pdf
 from app.invoicing.repository import (
     FiscalDataRepository,
     InvoiceRepository,
@@ -350,6 +352,45 @@ async def get_invoice(tenant: CurrentTenant, invoice_id: int, session: SessionDe
     return await _find_invoice(InvoiceRepository(session, tenant.id), invoice_id)
 
 
+@invoice_router.get(
+    "/{invoice_id}/pdf",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"application/pdf": {"schema": {"type": "string", "format": "binary"}}},
+            "description": "The invoice as a PDF document, served as a download",
+        },
+        404: {"description": "No such issued invoice in the account"},
+        409: {"description": "The invoice is a draft"},
+    },
+    summary="Download an issued invoice as PDF",
+    description=(
+        "The invoice as an A4 PDF: the issuer's company name and fiscal data, the invoice "
+        "number (in the largest type), the client, dates, payment method, concepts, VAT, "
+        "IRPF retention, totals and notes. Only ISSUED invoices can be exported (`409` for "
+        "drafts, which have no number yet). Served as an attachment named after the "
+        "number (`Factura-F-2026-42.pdf`)."
+    ),
+)
+async def get_invoice_pdf(tenant: CurrentTenant, invoice_id: int, session: SessionDep) -> Response:
+    invoice = await _find_invoice(InvoiceRepository(session, tenant.id), invoice_id)
+    if invoice.state is not InvoiceState.ISSUED:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Only issued invoices can be exported as PDF")
+    # Snapshot the invoice here (ORM attributes must be read on the event loop), then
+    # render it -- CPU-bound work -- in a worker thread.
+    data = InvoiceRead.model_validate(invoice)
+    pdf = await run_in_threadpool(render_invoice_pdf, data)
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{pdf_filename(data)}"',
+            # Issued invoices are immutable, but the session decides who may see them
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
 async def _find_client(client_id: int, session: AsyncSession, tenant: User) -> Client:
     """The client referenced by the payload, or a 422. Clients of other tenants count as
     missing."""
@@ -452,6 +493,29 @@ async def update_invoice(
 
     await session.commit()
     return await repo.reload(invoice)
+
+
+@invoice_router.delete(
+    "/{invoice_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={
+        404: {"description": "No such issued invoice in the account"},
+        409: {"description": "The invoice is issued"},
+    },
+    summary="Delete a draft",
+    description=(
+        "Deletes a DRAFT invoice, with its lines and its copy of the client. Issued invoices "
+        "cannot be deleted (`409`): their numbers must stay correlative and unbroken. "
+        "Drafts take no number, so deleting one leaves no gap."
+    ),
+)
+async def delete_invoice(tenant: CurrentTenant, invoice_id: int, session: SessionDep) -> None:
+    repo = InvoiceRepository(session, tenant.id)
+    invoice = await _find_invoice(repo, invoice_id)
+    if invoice.state is InvoiceState.ISSUED:
+        raise HTTPException(status.HTTP_409_CONFLICT, "An issued invoice cannot be deleted")
+    await repo.delete(invoice)
+    await session.commit()
 
 
 @invoice_router.put(
@@ -574,6 +638,25 @@ async def update_received_invoice(
 
     await session.commit()
     return await repo.reload(invoice)
+
+
+@received_invoice_router.delete(
+    "/{invoice_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses={404: {"description": "No such received invoice in the account"}},
+    summary="Delete a received invoice",
+    description=(
+        "Deletes a received invoice with its lines, e.g. one recorded by mistake or twice. "
+        "Always allowed: it stops counting as an expense. The supplier's number is theirs, "
+        "so no numbering is affected."
+    ),
+)
+async def delete_received_invoice(
+    tenant: CurrentTenant, invoice_id: int, session: SessionDep
+) -> None:
+    repo = _received_repo(session, tenant)
+    await repo.delete(await _find_invoice(repo, invoice_id))
+    await session.commit()
 
 
 ExtractorDep = Annotated[InvoiceExtractor | None, Depends(get_invoice_extractor)]

@@ -1,4 +1,4 @@
-import { request } from './client'
+import { download, request } from './client'
 import type {
   Client,
   Dashboard,
@@ -48,6 +48,15 @@ export const api = {
   updateInvoice: (id: number, input: InvoiceInput) =>
     request<Invoice>(`/api/invoice/${id}`, { method: 'PUT', body: input }),
 
+  /** Deletes a draft with its lines (`409` for issued invoices, which cannot be deleted). */
+  deleteInvoice: (id: number) => request<void>(`/api/invoice/${id}`, { method: 'DELETE' }),
+
+  /**
+   * The issued invoice as a PDF document, with its file name (`Factura-F-2026-42.pdf`).
+   * `409` for drafts.
+   */
+  downloadInvoicePdf: (id: number, signal?: AbortSignal) => download(`/api/invoice/${id}/pdf`, signal),
+
   /**
    * Records the day the client paid an issued invoice, or `null` to mark it as pending
    * collection again (`409` for drafts, `422` for a date before issuing or in the future).
@@ -82,6 +91,9 @@ export const api = {
     body.append('file', file)
     return request<ReceivedInvoiceDraft>('/api/received-invoice/extract', { method: 'POST', body, signal })
   },
+
+  /** Deletes a received invoice with its lines (always allowed). */
+  deleteReceivedInvoice: (id: number) => request<void>(`/api/received-invoice/${id}`, { method: 'DELETE' }),
 
   /** Replaces a received invoice (they can always be edited). */
   updateReceivedInvoice: (id: number, input: ReceivedInvoiceInput) =>

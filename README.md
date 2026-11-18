@@ -18,13 +18,18 @@ expenses and taxes (VAT, IRPF).
 The core of **issued invoices** works end to end (API + UI):
 
 - [x] Create, edit and list invoices with a `DRAFT` → `ISSUED` lifecycle. Drafts are editable and
-      numberless; issued invoices are immutable and get the next sequential number of their serial.
+      numberless and can be deleted; issued invoices are immutable, cannot be deleted and get the
+      next sequential number of their serial.
 - [x] Concepts with description, quantity, unit price and per-line VAT rate; invoice-level IRPF
       retention; subtotal / tax / retention / total computed server-side with exact decimals.
 - [x] Issue date, due date (validated), payment method and free-text notes.
 - [x] Pick the invoice's client from the client directory (search by name or NIF/CIF); the
       invoice keeps its own copy of the client's data.
 - [x] Invoice list filtered by state, with detail view.
+- [x] **PDF export** — issued invoices can be downloaded as an A4 PDF (*Descargar PDF* in the
+      invoice details) with all their data: the company name and fiscal data of the issuer,
+      the invoice number in the largest type, the client, dates, payment method, concepts,
+      VAT, IRPF retention, totals and notes. See [PDF export](#pdf-export-of-issued-invoices).
 - [x] Docker-based dev workflow, migrations, fixtures and API test suite.
 - [x] **Accounts and authentication** — e-mail + password login (no self-registration), two
       roles (`SUPER_ADMIN` manages accounts, `ADMIN` is a tenant with its own data), account
@@ -42,7 +47,7 @@ The core of **issued invoices** works end to end (API + UI):
 - [x] **Received invoices (expenses)** — the top bar has *Ingresos* (issued) and *Gastos* (received).
       Received invoices have the same concepts, VAT, IRPF, dates, payment method and notes as
       issued ones; the supplier and its invoice number are typed in, the account's fiscal data
-      is the recipient, and there are no drafts: they can always be edited. See
+      is the recipient, and there are no drafts: they can always be edited or deleted. See
       [Received invoices](#received-invoices-expenses).
 - [x] **Import received invoices from PDF** — upload the supplier's PDF (any layout, scans
       included) and the form is filled in from it, to review before saving. Read by an LLM of
@@ -58,15 +63,14 @@ Partially there, with known gaps:
 - [ ] **Clients** — cannot be created inline from the invoice form yet; suppliers are not
       modelled either: the supplier of a received invoice is typed in every time.
 - [ ] **Drafts** — must already satisfy the same content rules as issued invoices (the spec allows
-      incomplete drafts) and cannot be deleted.
+      incomplete drafts).
 
 ### Next: complete the MVP
 
 1. **Per-invoice issuer** — allow editing the fiscal data for a single invoice only.
 2. **Suppliers** — a supplier directory to pick the issuer of received invoices from; create a
    client inline from the invoice form.
-3. **Draft rules** — let drafts be saved incomplete, enforce required fields only when issuing,
-   and allow deleting drafts.
+3. **Draft rules** — let drafts be saved incomplete, enforce required fields only when issuing.
 4. **Taxes**
    - VAT to pay for a date range, with presets (*this month*, *current quarter*, *current year*).
    - Pending IRPF from income and IRPF already withheld/advanced, by quarter or fiscal year.
@@ -91,6 +95,7 @@ Partially there, with known gaps:
 | Geo data   | ISO 3166 countries / provinces (pycountry, Spanish names), GeoNames postal codes and localities |
 | E-mail     | SMTP (stdlib) — Mailpit in development                  |
 | Invoice reading | Any LLM vendor through LiteLLM (+ pypdf): PDF import of received invoices |
+| PDF export | ReportLab: issued invoices as PDF documents                     |
 | Runtime    | Docker Compose                                          |
 
 The backend exposes a JSON API under `/api` (OpenAPI contract at `/api/docs`) and serves the
@@ -212,12 +217,15 @@ session (see [Accounts & authentication](#accounts--authentication)). Invoicing 
 | GET    | `/api/invoice/{id}`                     | ADMIN        | Issued invoice detail                          |
 | POST   | `/api/invoice`                          | ADMIN        | Create an invoice (draft or issued) for `clientId` with its lines (`409` until the fiscal data is set) |
 | PUT    | `/api/invoice/{id}`                     | ADMIN        | Replace a draft invoice (optionally re-pointing it at a `clientId`), or issue it |
+| DELETE | `/api/invoice/{id}`                     | ADMIN        | Delete a draft (`409` for issued invoices, which cannot be deleted) |
+| GET    | `/api/invoice/{id}/pdf`                 | ADMIN        | The issued invoice as a PDF download (`409` for drafts) |
 | PUT    | `/api/invoice/{id}/collection`          | ADMIN        | `{collectedOn}`: the day the client paid an issued invoice, or `null` for pending (`409` for drafts) |
 | GET    | `/api/dashboard`                        | ADMIN        | Income, expenses and their monthly series for `?from=&to=`, plus what is pending collection |
 | GET    | `/api/received-invoice`                 | ADMIN        | Collection of received invoices (`?limit=&offset=`) |
 | GET    | `/api/received-invoice/{id}`            | ADMIN        | Received invoice detail                        |
 | POST   | `/api/received-invoice`                 | ADMIN        | Record a supplier's invoice: supplier, number (required) and lines as entered (`409` until the fiscal data is set) |
 | PUT    | `/api/received-invoice/{id}`            | ADMIN        | Replace a received invoice (always allowed)    |
+| DELETE | `/api/received-invoice/{id}`            | ADMIN        | Delete a received invoice (always allowed)     |
 | POST   | `/api/received-invoice/extract`         | ADMIN        | Read a supplier's invoice from a PDF (multipart `file`) → a draft to pre-fill the form; nothing is stored |
 
 Example — `GET /api/invoice`:
@@ -236,7 +244,7 @@ Example — `GET /api/invoice`:
       "dueDate": "2026-07-08",
       "paymentMethod": "TRANSFER",
       "retentionRate": 0,
-      "issuer":    { "fullName": "Néstor Freelance",  "document": { "type": "NIF", "number": "12345678Z" },
+      "issuer":    { "fullName": "Jesús Freelance",  "document": { "type": "NIF", "number": "12345678Z" },
                      "address": { "street": "Calle Luna 5", "zipCode": "35001", "city": "Las Palmas", "province": "Las Palmas", "countryIsoCode": "ES" } },
       "recipient": { "id": 2, "fullName": "Tech Solutions SL", "document": { "type": "CIF", "number": "B12345678" }, "address": { "...": "..." } },
       "lines": [
@@ -274,6 +282,12 @@ Conventions:
   prefix / suffix are copied onto the invoice. Numbers cannot be chosen by hand.
 - `PUT /api/invoice/{id}` replaces a draft in full (lines included); sending `"state": "ISSUED"`
   issues it and assigns its number. Issued invoices are immutable (`409 Conflict`).
+- `DELETE /api/invoice/{id}` deletes a **draft** (`204`), with its lines and its copy of the
+  client (the client in the directory is not affected). Drafts have no number, so no gap is
+  left in the serial. **Issued invoices cannot be deleted** (`409 Conflict`): Spanish invoicing
+  requires correlative, unbroken numbering. In the app, drafts have a delete icon in the list
+  and an *Eliminar* button in their edit view, both asking for confirmation; issued invoices
+  have neither.
 - `issueDate` cannot be in the future and `dueDate` cannot be earlier than it.
 - `/api/invoice` only ever sees **issued** invoices and `/api/received-invoice` only **received**
   ones (`kind` in the payload says which): an invoice of the other kind is a `404`, like another
@@ -313,11 +327,38 @@ issue date nor in the future) or back as pending. This is recorded on the invoic
 (`collectedOn`) but is not part of its content, so it can change after issuing. Migration `0012`
 adds it; existing invoices start as pending.
 
+## PDF export of issued invoices
+
+The details of an issued invoice (*Ingresos*, click a row of *Facturas emitidas*) have a
+**Descargar PDF** button, which downloads `Factura-<number>.pdf` (e.g. `Factura-F-2026-42.pdf`;
+characters that are not safe in a file name become `-`). Behind it, `GET /api/invoice/{id}/pdf`
+(`app/invoicing/pdf.py`) renders an A4 document, in Spanish like the rest of the app, with:
+
+- **Header** — the company name of the issuer, with its NIF / CIF and address, and the
+  **invoice number in the largest type of the document**.
+- **Client** — name, NIF / CIF and address, next to the issue date, due date and payment method.
+- **Concepts** — description, quantity, unit price, VAT rate, taxable base, VAT and total of
+  each line. Long invoices continue on further pages, repeating the table header.
+- **Totals** — taxable base, VAT, IRPF retention (with its rate, when there is one) and total.
+- **Notes**, with their line breaks, and a footer on every page with the invoice number, the
+  company name and *Página n de m*.
+
+The PDF is built from the data stored on the invoice, as the API returns it: the issuer and
+client copies taken when it was issued, and the amounts computed by the backend. Later changes
+to the fiscal data or to the client do not alter it. Only issued invoices can be exported:
+drafts have no number yet (`409`). Received invoices are the supplier's documents and have no
+export.
+
+Text uses the standard PDF fonts (Helvetica), which cover Spanish and the other Western European
+languages, `€` included. Characters outside that set (e.g. Polish or Greek names) print as a
+placeholder box.
+
 ## Received invoices (expenses)
 
 The top bar has two invoice books: **Ingresos** (income, invoices to clients: drafts and
 issued invoices) and **Gastos** (expenses, invoices from suppliers: a single list). A received invoice is recorded with *Registrar Factura Recibida*; clicking one in
-the list opens it for editing.
+the list opens it for editing; it can be deleted from there (*Eliminar*) or with the delete
+icon of its row, after confirming.
 
 A received invoice has what an issued one has — concepts with VAT, invoice-level IRPF
 retention, issue / due date, payment method and notes — except:
@@ -329,6 +370,7 @@ retention, issue / due date, payment method and notes — except:
 | `invoiceNumber` | Next number of the serial `serialId`, assigned when issuing | **The supplier's number, whole and as printed (`{"number": "FV-2026/0042"}`), required** — which part of it is a series is not the user's concern, so `prefix` / `suffix` stay empty |
 | `serialId` | The serial used | Always `null`: received invoices never take a number from, or lock, a serial |
 | `state` | `DRAFT` → `ISSUED`; immutable once issued | Not in the payload; always `ISSUED` (the supplier issued it), and **always editable** |
+| Deleting | Drafts only (`409` once issued) | **Always allowed** (`DELETE /api/received-invoice/{id}`): e.g. an invoice recorded twice. It stops counting as an expense |
 
 - The supplier is validated like a client: name, a NIF / CIF with a valid check character (or
   `OTHER` for foreign identifiers) and a full address checked against the Geo module. The form
@@ -561,6 +603,7 @@ isofactu/
 │   │   │   ├── document_type.py  # CIF | NIF | OTHER
 │   │   │   ├── invoice_kind.py   # ISSUED | RECEIVED (income / expense)
 │   │   │   ├── extraction.py  #   Reading received invoices from PDF (any LLM, via LiteLLM) into a form draft
+│   │   │   ├── pdf.py         #   Rendering issued invoices as PDF (ReportLab)
 │   │   │   ├── invoice_state.py  # DRAFT | ISSUED
 │   │   │   ├── payment_method.py # TRANSFER | CASH | CARD | DIRECT_DEBIT
 │   │   │   ├── money.py       #   bcmath-compatible decimal helpers

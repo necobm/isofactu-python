@@ -66,6 +66,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             allow_credentials=True,  # the session cookie
             allow_methods=["*"],
             allow_headers=["*"],
+            # Lets the SPA read the file name of downloads (invoice PDFs) cross-origin
+            expose_headers=["Content-Disposition"],
         )
 
     app.include_router(api_router)

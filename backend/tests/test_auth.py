@@ -81,11 +81,11 @@ async def test_login_sets_a_session_cookie(client: AsyncClient, tenant: User) ->
 
     # The e-mail is case-insensitive and surrounding blanks are ignored
     response = await client.post(
-        "/api/auth/login", json={"email": "  Tenant@Example.COM ", "password": PASSWORD}
+        "/api/auth/login", json={"email": "  Tenant@Example.LOCAL ", "password": PASSWORD}
     )
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["email"] == "tenant@example.com"
+    assert body["email"] == "tenant@Example.local"
     assert (body["role"], body["status"]) == ("ADMIN", "ACTIVE")
     assert body["hasPassword"] is True
     assert body["lastLoginAt"] is not None
@@ -114,7 +114,7 @@ async def test_login_rejects_bad_credentials(client: AsyncClient, tenant: User) 
         return response.status_code
 
     assert await attempt(tenant.email, "wrong-password") == 401
-    assert await attempt("nobody@example.com", PASSWORD) == 401  # same answer: no enumeration
+    assert await attempt("nobody@Example.local", PASSWORD) == 401  # same answer: no enumeration
     assert await attempt("not-an-email", PASSWORD) == 422
     assert await attempt(tenant.email, "") == 422
     assert COOKIE not in client.cookies
@@ -174,7 +174,7 @@ async def test_activation_flow(
     client: AsyncClient, super_admin_client: AsyncClient, mailer: InMemoryMailer
 ) -> None:
     created = await super_admin_client.post(
-        "/api/admin/user", json={"email": "ana@empresa.es", "name": "Ana"}
+        "/api/admin/user", json={"email": "ana@Example.local", "name": "Ana"}
     )
     assert created.status_code == 201, created.text
     assert (created.json()["status"], created.json()["hasPassword"]) == ("PAUSED", False)
@@ -182,7 +182,7 @@ async def test_activation_flow(
     assert timedelta(hours=23) < expires_at - datetime.now(UTC) <= timedelta(hours=24)
 
     # One e-mail, to the new user, carrying the link
-    assert [mail.to for mail in mailer.outbox] == ["ana@empresa.es"]
+    assert [mail.to for mail in mailer.outbox] == ["ana@Example.local"]
     assert mailer.outbox[0].subject == "Activa tu cuenta de Isofactu"
     assert "Hola Ana," in mailer.outbox[0].text
     assert "24 horas" in mailer.outbox[0].text
@@ -191,12 +191,12 @@ async def test_activation_flow(
     # The page first checks the link and learns who it is for
     info = await client.get(f"/api/auth/activate/{token}")
     assert info.status_code == 200, info.text
-    assert info.json()["email"] == "ana@empresa.es"
+    assert info.json()["email"] == "ana@Example.local"
     assert (await client.get("/api/auth/activate/not-a-token")).status_code == 404
 
     # Until the password is chosen the account cannot log in
     assert (
-        await client.post("/api/auth/login", json={"email": "ana@empresa.es", "password": "x"})
+        await client.post("/api/auth/login", json={"email": "ana@Example.local", "password": "x"})
     ).status_code == 401
 
     # Weak passwords are refused and the link stays usable
@@ -223,7 +223,7 @@ async def test_activation_flow(
     # ... and the new credentials work (activation itself does not log the user in)
     assert (await client.get("/api/auth/me")).status_code == 401
     login = await client.post(
-        "/api/auth/login", json={"email": "ana@empresa.es", "password": "ana-pass-123"}
+        "/api/auth/login", json={"email": "ana@Example.local", "password": "ana-pass-123"}
     )
     assert login.status_code == 200, login.text
     assert (await client.get("/api/invoice")).json()["total"] == 0
@@ -235,7 +235,7 @@ async def test_expired_links_are_refused(
     mailer: InMemoryMailer,
     session: AsyncSession,
 ) -> None:
-    created = await super_admin_client.post("/api/admin/user", json={"email": "ana@empresa.es"})
+    created = await super_admin_client.post("/api/admin/user", json={"email": "ana@Example.local"})
     token = activation_token(mailer)
     user = await session.get(User, created.json()["id"])
     assert user is not None and user.activation_token is not None
@@ -256,7 +256,7 @@ async def test_expired_links_are_refused(
 async def test_resending_replaces_the_previous_link(
     client: AsyncClient, super_admin_client: AsyncClient, mailer: InMemoryMailer
 ) -> None:
-    created = await super_admin_client.post("/api/admin/user", json={"email": "ana@empresa.es"})
+    created = await super_admin_client.post("/api/admin/user", json={"email": "ana@Example.local"})
     user_id = created.json()["id"]
     first = activation_token(mailer)
 
@@ -291,7 +291,7 @@ async def test_resending_lets_an_active_user_choose_a_new_password(
 async def test_pausing_revokes_the_activation_link(
     client: AsyncClient, super_admin_client: AsyncClient, mailer: InMemoryMailer
 ) -> None:
-    created = await super_admin_client.post("/api/admin/user", json={"email": "ana@empresa.es"})
+    created = await super_admin_client.post("/api/admin/user", json={"email": "ana@Example.local"})
     user_id = created.json()["id"]
     token = activation_token(mailer)
 
@@ -305,7 +305,7 @@ async def test_pausing_revokes_the_activation_link(
     activated = await super_admin_client.post(f"/api/admin/user/{user_id}/activate")
     assert (activated.json()["status"], activated.json()["hasPassword"]) == ("ACTIVE", False)
     assert (
-        await client.post("/api/auth/login", json={"email": "ana@empresa.es", "password": "x"})
+        await client.post("/api/auth/login", json={"email": "ana@Example.local", "password": "x"})
     ).status_code == 401
 
 
@@ -319,7 +319,7 @@ async def test_link_lifetime_follows_the_system_setting(
     assert updated.status_code == 200, updated.text
     assert updated.json() == {"activationLinkTtlHours": hours}
 
-    created = await super_admin_client.post("/api/admin/user", json={"email": "ana@empresa.es"})
+    created = await super_admin_client.post("/api/admin/user", json={"email": "ana@Example.local"})
     expires_at = datetime.fromisoformat(created.json()["activationExpiresAt"])
     remaining = expires_at - datetime.now(UTC)
     assert timedelta(hours=hours - 1) < remaining <= timedelta(hours=hours)

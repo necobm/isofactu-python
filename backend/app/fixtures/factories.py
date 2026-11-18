@@ -234,7 +234,7 @@ class UserFactory(BaseFactory):
     class Meta:
         model = User
 
-    email = factory.Sequence(lambda n: f"user{n + 1}@example.com")
+    email = factory.Sequence(lambda n: f"user{n + 1}@example.local")
     name = factory.Faker("name", locale=LOCALE)
     role = Role.ADMIN
     status = AccountStatus.ACTIVE

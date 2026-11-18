@@ -10,8 +10,8 @@ from app.invoicing.invoice_state import InvoiceState
 from app.invoicing.models import FiscalData, Serial, Subject
 from tests.conftest import login
 
-NESTOR = {
-    "fullName": "Néstor Freelance",
+JESUS = {
+    "fullName": "Jesús Freelance",
     "document": {"type": "NIF", "number": "12345678Z"},
     "address": {
         "street": "Calle Luna 5",
@@ -48,8 +48,8 @@ async def test_client_crud(tenant_client: AsyncClient) -> None:
         "offset": 0,
     }
 
-    created = await _create(tenant_client, NESTOR)
-    assert created["fullName"] == "Néstor Freelance"
+    created = await _create(tenant_client, JESUS)
+    assert created["fullName"] == "Jesús Freelance"
     assert created["document"] == {"type": "NIF", "number": "12345678Z"}
     assert created["address"]["countryIsoCode"] == "ES"  # default
     minimal = await _create(tenant_client, {**TECH, "fullName": "Otro Cliente SL"})
@@ -66,11 +66,11 @@ async def test_client_crud(tenant_client: AsyncClient) -> None:
     assert (await tenant_client.get("/api/client/999")).status_code == 404
 
     updated = await tenant_client.put(
-        f"/api/client/{created['id']}", json={**NESTOR, "fullName": "Néstor Renombrado"}
+        f"/api/client/{created['id']}", json={**JESUS, "fullName": "Jesús Renombrado"}
     )
     assert updated.status_code == 200, updated.text
-    assert updated.json()["fullName"] == "Néstor Renombrado"
-    assert (await tenant_client.put("/api/client/999", json=NESTOR)).status_code == 404
+    assert updated.json()["fullName"] == "Jesús Renombrado"
+    assert (await tenant_client.put("/api/client/999", json=JESUS)).status_code == 404
 
     deleted = await tenant_client.delete(f"/api/client/{created['id']}")
     assert deleted.status_code == 204
@@ -80,7 +80,7 @@ async def test_client_crud(tenant_client: AsyncClient) -> None:
 
 
 async def test_search_clients(tenant_client: AsyncClient) -> None:
-    nestor = (await _create(tenant_client, NESTOR))["id"]
+    jesus = (await _create(tenant_client, JESUS))["id"]
     tech = (await _create(tenant_client, TECH))["id"]
     underscore = (await _create(tenant_client, {**TECH, "fullName": "Sub_Zero SL"}))["id"]
 
@@ -90,11 +90,11 @@ async def test_search_clients(tenant_client: AsyncClient) -> None:
         return response.json()["total"], [c["id"] for c in response.json()["items"]]
 
     assert await search("tech") == (1, [tech])  # case-insensitive, partial match on the name
-    assert await search("  néstor ") == (1, [nestor])
+    assert await search("  jesús ") == (1, [jesus])
     assert await search("b1234") == (2, [underscore, tech])  # or on the document number
     assert await search("Sub_") == (1, [underscore])  # LIKE metacharacters are literal
     assert await search("%") == (0, [])
-    assert await search("") == (3, [nestor, underscore, tech])  # blank = no filter, by name
+    assert await search("") == (3, [jesus, underscore, tech])  # blank = no filter, by name
     assert await search("nobody") == (0, [])
 
 

@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     smtp_password: str = ""
     smtp_starttls: bool = False
     smtp_timeout: float = 10.0
-    mail_from: str = "Isofactu <no-reply@isofactu.local>"
+    mail_from: str = ""
 
     # -- LLM (PDF import of received invoices) -------------------------------------------
     # Any vendor supported by LiteLLM (https://docs.litellm.ai/docs/providers). The PDF of

@@ -129,7 +129,7 @@ async def test_invoices_are_stamped_with_the_fiscal_data(
         )
     ).json()
     for invoice in (draft, issued):
-        assert invoice["issuer"]["fullName"] == "Néstor Freelance"
+        assert invoice["issuer"]["fullName"] == "Jesús Freelance"
         assert invoice["issuer"]["document"] == {"type": "NIF", "number": "12345678Z"}
         assert invoice["issuer"]["address"]["city"] == "Las Palmas"
 

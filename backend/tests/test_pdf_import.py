@@ -48,7 +48,7 @@ RAW: dict[str, Any] = {
         "province": "Gran Canaria",
         "country_code": "ES",
     },
-    "customer": {"name": "Néstor Freelance", "tax_id": "12345678-Z"},
+    "customer": {"name": "Jesús Freelance", "tax_id": "12345678-Z"},
     "invoice_number": "FV-2026/0042",
     "issue_date": "2026-03-05",
     "due_date": "2026-04-04",
@@ -128,7 +128,7 @@ async def test_extract_prefills_a_received_invoice(
         {"description": "Papel", "quantity": 1.0, "unitPrice": 1234.56, "taxRate": 21.0},
     ]
     assert draft["printedTotal"] == 1591.83
-    assert (draft["customerName"], draft["addressedToAccount"]) == ("Néstor Freelance", True)
+    assert (draft["customerName"], draft["addressedToAccount"]) == ("Jesús Freelance", True)
 
     # Nothing is stored ...
     assert (await tenant_client.get("/api/received-invoice")).json()["total"] == 0
@@ -237,7 +237,7 @@ async def test_extract_needs_a_tenant(
 
 def _account(number: str = "12345678Z") -> FiscalData:
     return FiscalDataFactory.build(
-        company_name="Néstor Freelance",
+        company_name="Jesús Freelance",
         document=IdentificationDocument(DocumentType.NIF, number),
         address=Address("Calle Luna 5", "35001", "Las Palmas", "Las Palmas", "ES"),
     )
@@ -307,7 +307,7 @@ def test_the_rest_of_the_draft_is_normalised() -> None:
             "irpf_rate": -15,
             "payment_method": "BIZUM",
             "total": "abc",
-            "customer": {"tax_id": "ES 12345678Z", "name": "Néstor"},
+            "customer": {"tax_id": "ES 12345678Z", "name": "Jesús"},
         },
         _account(),
     )
@@ -432,7 +432,7 @@ def _openai_reply(content: str) -> dict[str, Any]:
     }
 
 
-CUSTOMER = Issuer(full_name="Néstor Freelance", document_number="12345678Z")
+CUSTOMER = Issuer(full_name="Jesús Freelance", document_number="12345678Z")
 
 
 async def test_anthropic_gets_the_pdf_and_the_schema(vendor: FakeVendor) -> None:
@@ -450,7 +450,7 @@ async def test_anthropic_gets_the_pdf_and_the_schema(vendor: FakeVendor) -> None
     assert document["type"] == "document"
     assert document["source"]["media_type"] == "application/pdf"
     assert base64.b64decode(document["source"]["data"]) == PDF
-    assert "Néstor Freelance" in instructions["text"] and "12345678Z" in instructions["text"]
+    assert "Jesús Freelance" in instructions["text"] and "12345678Z" in instructions["text"]
     assert body["output_format"]["schema"] == INVOICE_SCHEMA
 
 

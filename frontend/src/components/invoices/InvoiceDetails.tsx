@@ -3,6 +3,7 @@ import { PAYMENT_METHOD_LABELS } from '@/components/invoice/paymentMethods'
 import { formatAmount, formatCurrency, formatDate, formatRate } from '@/lib/format'
 import CollectionPanel from './CollectionPanel'
 import InvoiceStateBadge from './InvoiceStateBadge'
+import PdfDownloadButton from './PdfDownloadButton'
 
 /** Postal address as display lines, skipping the parts that are empty. */
 function addressLines({ street, zipCode, city, province, countryIsoCode }: Party['address']): string[] {
@@ -50,6 +51,8 @@ interface InvoiceDetailsProps {
 export default function InvoiceDetails({ invoice, onChanged }: InvoiceDetailsProps) {
   const number = invoice.invoiceNumber
   const hasRetention = invoice.retentionRate > 0
+  // Only issued invoices can be exported: drafts have no number yet
+  const exportable = invoice.kind === 'ISSUED' && invoice.state === 'ISSUED'
 
   return (
     <div className="space-y-4">
@@ -69,12 +72,15 @@ export default function InvoiceDetails({ invoice, onChanged }: InvoiceDetailsPro
           </p>
           <InvoiceStateBadge state={invoice.state} />
         </div>
-        <dl className="flex flex-wrap gap-x-6 gap-y-1 text-xs">
-          <Fact label="Fecha" value={formatDate(invoice.issueDate)} />
-          {number && <Fact label="Número" value={number.formatted} />}
-          <Fact label="Pago" value={PAYMENT_METHOD_LABELS[invoice.paymentMethod]} />
-          {invoice.dueDate && <Fact label="Vencimiento" value={formatDate(invoice.dueDate)} />}
-        </dl>
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+          <dl className="flex flex-wrap gap-x-6 gap-y-1 text-xs">
+            <Fact label="Fecha" value={formatDate(invoice.issueDate)} />
+            {number && <Fact label="Número" value={number.formatted} />}
+            <Fact label="Pago" value={PAYMENT_METHOD_LABELS[invoice.paymentMethod]} />
+            {invoice.dueDate && <Fact label="Vencimiento" value={formatDate(invoice.dueDate)} />}
+          </dl>
+          {exportable && <PdfDownloadButton invoice={invoice} />}
+        </div>
       </div>
 
       {/* Collection (issued invoices) */}

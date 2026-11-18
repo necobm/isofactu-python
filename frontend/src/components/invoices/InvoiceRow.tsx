@@ -16,9 +16,11 @@ interface InvoiceRowProps {
   onActivate: () => void
   /** The invoice changed from its details (e.g. marked as collected): reload the list. */
   onChanged?: () => void
+  /** Offers to delete the invoice (drafts and received invoices only). */
+  onDelete?: () => void
 }
 
-export default function InvoiceRow({ invoice, expandable, expanded, onActivate, onChanged }: InvoiceRowProps) {
+export default function InvoiceRow({ invoice, expandable, expanded, onActivate, onChanged, onDelete }: InvoiceRowProps) {
   const collection = collectionStatus(invoice, isoDate(new Date()))
   // The other party: the client of an issued invoice, the supplier of a received one
   const counterpart = invoice.kind === 'RECEIVED' ? invoice.issuer : invoice.recipient
@@ -49,7 +51,24 @@ export default function InvoiceRow({ invoice, expandable, expanded, onActivate, 
         <td className="px-5 py-3.5 text-right font-semibold text-slate-800 whitespace-nowrap">
           {formatCurrency(invoice.total)}
         </td>
-        <td className="px-5 py-3.5 text-right">
+        <td className="px-5 py-3.5 text-right whitespace-nowrap">
+          {onDelete && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation() // the row itself opens the invoice
+                onDelete()
+              }}
+              title="Eliminar"
+              aria-label={`Eliminar factura de ${counterpart.fullName}`}
+              className="mr-2 p-1.5 align-middle rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                  d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+            </button>
+          )}
           <svg
             className={`w-4 h-4 inline-block text-slate-400 transition-transform ${expanded ? 'rotate-90 text-indigo-600' : ''}`}
             fill="none" viewBox="0 0 24 24" stroke="currentColor"

@@ -175,6 +175,18 @@ class InvoiceRepository:
         await self.session.flush()
         return invoice
 
+    async def delete(self, invoice: Invoice) -> None:
+        """Delete the invoice with its lines and its recipient: the recipient is the
+        invoice's own copy of the client (or of the fiscal data), so it goes with it --
+        unless other invoices share it (data created before clients were copied per
+        invoice)."""
+        recipient = invoice.recipient
+        await self.session.delete(invoice)  # the lines go with it (cascade)
+        await self.session.flush()
+        if await SubjectRepository(self.session, self.owner_id).reference_count(recipient) == 0:
+            await self.session.delete(recipient)
+            await self.session.flush()
+
     async def reload(self, invoice: Invoice) -> Invoice:
         """Reload every attribute (relationships included) so the entity can be serialised
         without triggering lazy loads, e.g. right after a commit."""

@@ -249,7 +249,7 @@ async def fiscal_data(factories: None, tenant: User, session: AsyncSession) -> F
     """The fiscal data of `tenant` (a fixed Spanish freelancer), needed to save invoices."""
     data = FiscalDataFactory(
         owner=tenant,
-        company_name="Néstor Freelance",
+        company_name="Jesús Freelance",
         document=IdentificationDocument(DocumentType.NIF, "12345678Z"),
         address=Address("Calle Luna 5", "35001", "Las Palmas", "Las Palmas", "ES"),
     )

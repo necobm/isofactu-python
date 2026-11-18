@@ -80,7 +80,7 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_STARTTLS: ${SMTP_STARTTLS:-false}
-      MAIL_FROM: ${MAIL_FROM:-Isofactu <no-reply@isofactutesting.local>}
+      MAIL_FROM: ${MAIL_FROM:-}
       # LLM reading received invoices from PDF (any LiteLLM vendor). Empty provider or
       # model = PDF import disabled.
       LLM_PROVIDER: ${LLM_PROVIDER:-}

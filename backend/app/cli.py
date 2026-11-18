@@ -1,6 +1,6 @@
 """Management commands: ``python -m app.cli --help`` (or ``isofactu --help`` once installed).
 
-python -m app.cli users create-super-admin --email admin@example.com   # prompts for the password
+python -m app.cli users create-super-admin --email admin@example.local   # prompts for the password
 python -m app.cli fixtures load --invoices 30 --seed 42
 python -m app.cli fixtures load --purge --yes
 python -m app.cli fixtures purge --yes

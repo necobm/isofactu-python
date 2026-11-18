@@ -21,8 +21,8 @@ def client(tenant_client: AsyncClient, fiscal_data: FiscalData) -> AsyncClient:
     return tenant_client
 
 
-NESTOR = {
-    "fullName": "Néstor Freelance",
+JESUS = {
+    "fullName": "Jesús Freelance",
     "document": {"type": "NIF", "number": "12345678Z"},
     "address": {
         "street": "Calle Luna 5",
@@ -107,7 +107,7 @@ async def test_create_and_list_invoices(client: AsyncClient) -> None:
         "CARD",
     )
     # The issuer is the account's fiscal data, stamped by the server
-    assert body["issuer"]["fullName"] == "Néstor Freelance"
+    assert body["issuer"]["fullName"] == "Jesús Freelance"
     assert body["issuer"]["document"] == {"type": "NIF", "number": "12345678Z"}
     assert body["issuer"]["address"]["street"] == "Calle Luna 5"
     assert "id" not in body["issuer"]
@@ -506,5 +506,5 @@ async def test_super_admins_have_no_invoicing_data(super_admin_client: AsyncClie
     for path in ("/api/invoice", "/api/client", "/api/serial"):
         response = await super_admin_client.get(path)
         assert response.status_code == 403, response.text
-    assert (await super_admin_client.post("/api/client", json=NESTOR)).status_code == 403
+    assert (await super_admin_client.post("/api/client", json=JESUS)).status_code == 403
     assert (await super_admin_client.get("/api/fiscal-data")).status_code == 403

@@ -64,11 +64,11 @@ async def test_list_and_get_accounts(
 
 async def test_create_account(super_admin_client: AsyncClient, mailer: InMemoryMailer) -> None:
     response = await super_admin_client.post(
-        "/api/admin/user", json={"email": " Ana@Empresa.ES ", "name": "Ana García"}
+        "/api/admin/user", json={"email": " Ana@Example.COM ", "name": "Ana García"}
     )
     assert response.status_code == 201, response.text
     body = response.json()
-    assert body["email"] == "ana@empresa.es"  # normalised
+    assert body["email"] == "ana@example.com"  # normalised
     assert (body["name"], body["role"], body["status"]) == ("Ana García", "ADMIN", "PAUSED")
     assert body["hasPassword"] is False
     assert body["activationExpiresAt"] is not None
@@ -82,7 +82,7 @@ async def test_create_account(super_admin_client: AsyncClient, mailer: InMemoryM
     assert root.status_code == 201, root.text
     assert root.json()["role"] == "SUPER_ADMIN"
 
-    duplicate = await super_admin_client.post("/api/admin/user", json={"email": "ANA@empresa.es"})
+    duplicate = await super_admin_client.post("/api/admin/user", json={"email": "ANA@example.com"})
     assert duplicate.status_code == 409
     assert "already exists" in duplicate.json()["detail"]
 
@@ -90,7 +90,7 @@ async def test_create_account(super_admin_client: AsyncClient, mailer: InMemoryM
     assert invalid.status_code == 422
     assert invalid.json()["detail"][0]["loc"] == ["body", "email"]
     invalid = await super_admin_client.post(
-        "/api/admin/user", json={"email": "x@y.es", "role": "GOD"}
+        "/api/admin/user", json={"email": "x@example.com", "role": "GOD"}
     )
     assert invalid.status_code == 422
     assert len(mailer.outbox) == 2  # nothing sent for the failed attempts
@@ -106,10 +106,10 @@ async def test_creation_is_rolled_back_when_the_mail_cannot_be_sent(
     from app.core.mail import get_mailer
 
     app.dependency_overrides[get_mailer] = BrokenMailer
-    response = await super_admin_client.post("/api/admin/user", json={"email": "ana@empresa.es"})
+    response = await super_admin_client.post("/api/admin/user", json={"email": "ana@example.com"})
     assert response.status_code == 503, response.text
     assert "could not be sent" in response.json()["detail"]
-    count = select(func.count()).select_from(User).where(User.email == "ana@empresa.es")
+    count = select(func.count()).select_from(User).where(User.email == "ana@example.com")
     assert await session.scalar(count) == 0
 
 

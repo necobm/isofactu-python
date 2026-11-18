@@ -106,6 +106,7 @@ export default function TenantApp() {
           invoiceId={editingInvoiceId ?? undefined}
           onBack={() => showInvoices(kind)}
           onSaved={() => showInvoices(kind)}
+          onDeleted={() => showInvoices(kind)}
           onOpenSettings={configureFiscalData}
         />
       </>

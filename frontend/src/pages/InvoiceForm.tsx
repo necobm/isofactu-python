@@ -17,6 +17,8 @@ import ConfirmDialog from '@/components/ConfirmDialog'
 import { Field } from '@/components/form'
 import ClientPicker from '@/components/invoice/ClientPicker'
 import ConceptsTable from '@/components/invoice/ConceptsTable'
+import DeleteInvoiceDialog from '@/components/invoices/DeleteInvoiceDialog'
+import { isDeletable } from '@/components/invoices/deletion'
 import IssuerCard from '@/components/invoice/IssuerCard'
 import PdfImportPanel, { type PdfImportResult } from '@/components/invoice/PdfImportPanel'
 import TotalsPanel, { type TaxBreakdownEntry } from '@/components/invoice/TotalsPanel'
@@ -118,11 +120,13 @@ interface InvoiceFormProps {
   onBack: () => void
   /** The invoice was stored (as draft or issued). */
   onSaved: () => void
+  /** The invoice being edited (a draft or a received invoice) was deleted. */
+  onDeleted: () => void
   /** Open the account settings (fiscal data, serials), needed before saving / issuing. */
   onOpenSettings: () => void
 }
 
-export default function InvoiceForm({ kind, invoiceId, onBack, onSaved, onOpenSettings }: InvoiceFormProps) {
+export default function InvoiceForm({ kind, invoiceId, onBack, onSaved, onDeleted, onOpenSettings }: InvoiceFormProps) {
   const editing = invoiceId !== undefined
   const received = kind === 'RECEIVED'
   const texts = TEXTS[kind]
@@ -143,6 +147,7 @@ export default function InvoiceForm({ kind, invoiceId, onBack, onSaved, onOpenSe
   const [dueDate, setDueDate] = useState('')
   const [saving, setSaving] = useState<InvoiceState | null>(null)
   const [confirmingIssue, setConfirmingIssue] = useState(false)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loaded, setLoaded] = useState<Invoice | null>(null)
   // Received invoices: reading a PDF to fill in the form
@@ -683,6 +688,16 @@ export default function InvoiceForm({ kind, invoiceId, onBack, onSaved, onOpenSe
             {error ?? (importing ? 'Leyendo la factura del PDF…' : editing ? texts.hintEdit : texts.hintNew)}
           </p>
           <div className="flex items-center gap-3 shrink-0">
+            {loaded && isDeletable(loaded) && (
+              // Drafts and received invoices can be deleted; issued invoices never
+              <button
+                onClick={() => setConfirmingDelete(true)}
+                disabled={locked}
+                className="text-sm font-medium text-rose-600 hover:text-rose-700 px-4 py-2 rounded-lg hover:bg-rose-50 transition-colors disabled:opacity-50"
+              >
+                Eliminar
+              </button>
+            )}
             <button
               onClick={onBack}
               disabled={busy}
@@ -721,6 +736,10 @@ export default function InvoiceForm({ kind, invoiceId, onBack, onSaved, onOpenSe
           </div>
         </div>
       </div>
+
+      {confirmingDelete && loaded && (
+        <DeleteInvoiceDialog invoice={loaded} onDeleted={onDeleted} onCancel={() => setConfirmingDelete(false)} />
+      )}
 
       {confirmingIssue && (
         <ConfirmDialog

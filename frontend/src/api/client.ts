@@ -35,11 +35,25 @@ export function onUnauthorized(listener: UnauthorizedListener): () => void {
   return () => unauthorizedListeners.delete(listener)
 }
 
-export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+function buildUrl(path: string, query: object = {}): URL {
   const url = new URL(`${BASE_URL}${path}`, window.location.origin)
-  for (const [key, value] of Object.entries(options.query ?? {}) as [string, unknown][]) {
+  for (const [key, value] of Object.entries(query) as [string, unknown][]) {
     if (value !== undefined && value !== null) url.searchParams.set(key, String(value))
   }
+  return url
+}
+
+/** The `ApiError` of a failed response (notifying the `onUnauthorized` listeners on `401`). */
+async function failure(response: Response): Promise<ApiError> {
+  const isJson = response.headers.get('content-type')?.includes('application/json')
+  const payload = isJson ? await response.json() : await response.text()
+  const detail = isJson && payload && typeof payload === 'object' ? payload.detail : payload
+  if (response.status === 401) unauthorizedListeners.forEach((listener) => listener())
+  return new ApiError(response.status, detail, describeError(response.status, detail))
+}
+
+export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const url = buildUrl(path, options.query)
 
   const isForm = options.body instanceof FormData
   const response = await fetch(url, {
@@ -55,17 +69,41 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     credentials: 'include',
   })
 
+  if (!response.ok) throw await failure(response)
   if (response.status === 204) return undefined as T
 
   const isJson = response.headers.get('content-type')?.includes('application/json')
-  const payload = isJson ? await response.json() : await response.text()
+  return (isJson ? await response.json() : await response.text()) as T
+}
 
-  if (!response.ok) {
-    const detail = isJson && payload && typeof payload === 'object' ? payload.detail : payload
-    if (response.status === 401) unauthorizedListeners.forEach((listener) => listener())
-    throw new ApiError(response.status, detail, describeError(response.status, detail))
+/** A file served by the API (e.g. an invoice PDF). */
+export interface DownloadedFile {
+  blob: Blob
+  /** The name suggested by the server (`Content-Disposition`), if any. */
+  filename: string | null
+}
+
+/** GETs a binary resource; errors are reported like those of `request`. */
+export async function download(path: string, signal?: AbortSignal): Promise<DownloadedFile> {
+  const response = await fetch(buildUrl(path), { signal, credentials: 'include' })
+  if (!response.ok) throw await failure(response)
+  return { blob: await response.blob(), filename: filenameOf(response.headers.get('content-disposition')) }
+}
+
+/** `attachment; filename="Factura-F-2026-42.pdf"` -> `Factura-F-2026-42.pdf` */
+function filenameOf(contentDisposition: string | null): string | null {
+  if (!contentDisposition) return null
+  const encoded = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(contentDisposition)
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded[1].trim())
+    } catch {
+      // malformed: fall back to the plain parameter
+    }
   }
-  return payload as T
+  const plain = /filename\s*=\s*("([^"]*)"|[^;]+)/i.exec(contentDisposition)
+  const name = plain ? (plain[2] ?? plain[1]).trim() : ''
+  return name || null
 }
 
 function describeError(status: number, detail: unknown): string {

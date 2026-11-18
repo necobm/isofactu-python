@@ -78,7 +78,7 @@ async def test_record_a_received_invoice(client: AsyncClient) -> None:
     assert body["issuer"]["document"] == {"type": "CIF", "number": "B12345674"}
     assert body["issuer"]["address"]["city"] == "Las Palmas de Gran Canaria"
     # ... and the recipient is the account's fiscal data, stamped by the server
-    assert body["recipient"]["fullName"] == "Néstor Freelance"
+    assert body["recipient"]["fullName"] == "Jesús Freelance"
     assert body["recipient"]["document"] == {"type": "NIF", "number": "12345678Z"}
     assert body["recipient"]["address"]["street"] == "Calle Luna 5"
     # Same amounts as any invoice: per-line VAT, IRPF on the subtotal deducted from the total
@@ -172,7 +172,7 @@ async def test_the_recipient_is_the_fiscal_data_at_the_time_it_was_recorded(
     old = await _create(client)
 
     new_data = {
-        "companyName": "Néstor Freelance SL",
+        "companyName": "Jesús Freelance SL",
         "document": {"type": "CIF", "number": "B12345674"},
         "address": {"street": "Calle Sol 1", "zipCode": "35002", "city": "Las Palmas"},
     }
@@ -182,7 +182,7 @@ async def test_the_recipient_is_the_fiscal_data_at_the_time_it_was_recorded(
     edited = (await client.put(f"/api/received-invoice/{old['id']}", json=_payload())).json()
     assert edited["recipient"] == old["recipient"]
     # ... while new invoices get the current fiscal data
-    assert (await _create(client))["recipient"]["fullName"] == "Néstor Freelance SL"
+    assert (await _create(client))["recipient"]["fullName"] == "Jesús Freelance SL"
 
 
 async def test_received_invoices_need_the_fiscal_data(tenant_client: AsyncClient) -> None:

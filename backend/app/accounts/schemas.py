@@ -33,7 +33,7 @@ def _check_password(value: str) -> str:
 
 
 Email = Annotated[
-    str, Field(max_length=255, examples=["ana@empresa.es"]), AfterValidator(_normalise_email)
+    str, Field(max_length=255, examples=["ana@example.local"]), AfterValidator(_normalise_email)
 ]
 Password = Annotated[str, Field(examples=["s3cret-pass"]), AfterValidator(_check_password)]
 
