@@ -7,6 +7,7 @@ import Dashboard from '@/pages/Dashboard'
 import AiVendorSettings from '@/pages/AiVendorSettings'
 import FiscalDataSettings from '@/pages/FiscalDataSettings'
 import SerialSettings from '@/pages/SerialSettings'
+import Taxes from '@/pages/Taxes'
 import Invoices from '@/pages/Invoices'
 import InvoiceForm from '@/pages/InvoiceForm'
 import type { InvoiceKind } from '@/api'
@@ -16,6 +17,7 @@ const NAV_ITEMS: NavItem<Page>[] = [
   { id: 'dashboard', label: 'Panel' },
   { id: 'facturasEmitidas', label: 'Ingresos' },
   { id: 'facturasRecibidas', label: 'Gastos' },
+  { id: 'impuestos', label: 'Impuestos' },
   { id: 'clientes', label: 'Clientes' },
   { id: 'ajustes', label: 'Ajustes' },
 ]
@@ -24,6 +26,7 @@ const pageTitles: Record<Page, { title: string; subtitle: string }> = {
   dashboard: { title: 'Panel de Control', subtitle: 'Aquí tienes el resumen de tu actividad financiera.' },
   facturasEmitidas: { title: 'Facturas emitidas', subtitle: 'Tus ingresos: gestiona y consulta tus borradores y las facturas emitidas a tus clientes.' },
   facturasRecibidas: { title: 'Facturas recibidas', subtitle: 'Tus gastos: registra las facturas de tus proveedores y corrígelas cuando lo necesites.' },
+  impuestos: { title: 'Impuestos', subtitle: 'IVA e IRPF estimados a partir de tus facturas del trimestre en curso.' },
   clientes: { title: 'Directorio de Clientes', subtitle: 'Administra tu cartera de clientes.' },
   ajustes: { title: 'Ajustes de la cuenta', subtitle: 'Tus datos fiscales (el emisor de tus facturas y el receptor de las que recibes), las series de numeración y la IA que lee tus facturas recibidas.' },
   createInvoice: { title: '', subtitle: '' },
@@ -175,6 +178,7 @@ export default function TenantApp() {
         {activePage === 'facturasRecibidas' && (
           <Invoices key="RECEIVED" kind="RECEIVED" onEdit={(id) => editInvoice('RECEIVED', id)} />
         )}
+        {activePage === 'impuestos' && <Taxes />}
         {activePage === 'clientes' && <Clients onEdit={editClient} />}
         {activePage === 'ajustes' && (
           <div className="space-y-6">

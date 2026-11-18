@@ -15,6 +15,7 @@ from app.invoicing.router import (
     serial_router,
 )
 from app.invoicing.schemas import HealthStatus
+from app.taxes.router import taxes_router
 
 api_router = APIRouter(prefix="/api")
 
@@ -35,3 +36,4 @@ api_router.include_router(client_router)
 api_router.include_router(invoice_router)
 api_router.include_router(received_invoice_router)
 api_router.include_router(dashboard_router)
+api_router.include_router(taxes_router)

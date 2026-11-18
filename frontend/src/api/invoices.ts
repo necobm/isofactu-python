@@ -21,6 +21,7 @@ import type {
   ReceivedInvoiceInput,
   Serial,
   SerialInput,
+  TaxSummary,
 } from './types'
 
 export type PageParams = {
@@ -76,6 +77,10 @@ export const api = {
    */
   getDashboard: (period: { from?: string; to?: string } = {}, signal?: AbortSignal) =>
     request<Dashboard>('/api/dashboard', { query: period, signal }),
+
+  /** IVA and IRPF estimated from the invoices of a quarter (default: the current one). */
+  getTaxes: (period: { year?: number; quarter?: number } = {}, signal?: AbortSignal) =>
+    request<TaxSummary>('/api/taxes', { query: period, signal }),
 
   /** Invoices received from suppliers (expenses). */
   listReceivedInvoices: (params: PageParams = {}, signal?: AbortSignal) =>

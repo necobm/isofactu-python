@@ -412,3 +412,39 @@ export interface AiConnectionCheck {
   detail: string | null
   latencyMs: number
 }
+
+// -- Taxes (estimates of a quarter) -------------------------------------------------------
+
+export interface VatSummary {
+  /** VAT charged on the issued invoices (repercutido). */
+  collected: number
+  /** VAT paid on the received invoices (soportado). */
+  paid: number
+  /** collected - paid; negative: to carry forward. */
+  estimated: number
+  issuedCount: number
+  receivedCount: number
+}
+
+export interface IrpfSummary {
+  /** Advance payment rate on income not withheld (20). */
+  rate: number
+  /** Taxable base of the issued invoices to clients outside Spain. */
+  foreignIncome: number
+  /** `rate` % of `foreignIncome`. */
+  fromIncome: number
+  /** IRPF withheld by clients on the issued invoices. */
+  withheld: number
+  /** fromIncome - withheld; negative: nothing to pay. */
+  estimated: number
+  foreignInvoiceCount: number
+}
+
+export interface TaxSummary {
+  year: number
+  quarter: number
+  periodStart: string
+  periodEnd: string
+  vat: VatSummary
+  irpf: IrpfSummary
+}

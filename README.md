@@ -57,6 +57,9 @@ The core of **issued invoices** works end to end (API + UI):
 - [x] **Dashboard** — income, expenses and what is pending collection, plus an income vs
       expenses chart, all computed from the account's invoices for a chosen period; issued
       invoices can be marked as collected. See [Dashboard](#dashboard).
+- [x] **Taxes** — *Impuestos* (after *Gastos*) estimates the IVA and IRPF of the current
+      quarter from the invoices: VAT collected, paid and estimated; IRPF on income from clients
+      abroad, IRPF withheld by clients and estimated. See [Taxes](#taxes).
 
 Partially there, with known gaps:
 
@@ -72,9 +75,9 @@ Partially there, with known gaps:
 2. **Suppliers** — a supplier directory to pick the issuer of received invoices from; create a
    client inline from the invoice form.
 3. **Draft rules** — let drafts be saved incomplete, enforce required fields only when issuing.
-4. **Taxes**
-   - VAT to pay for a date range, with presets (*this month*, *current quarter*, *current year*).
-   - Pending IRPF from income and IRPF already withheld/advanced, by quarter or fiscal year.
+4. **Taxes, beyond the current quarter** — browse other quarters and the fiscal year (the API
+   already takes `?year=&quarter=`); IRPF advanced in previous quarters (modelo 130 is
+   cumulative).
 5. **Tax figures on the dashboard** — VAT to pay and IRPF, once the taxes above are computed.
 
 ### Later: beyond the MVP
@@ -224,6 +227,7 @@ session (see [Accounts & authentication](#accounts--authentication)). Invoicing 
 | GET    | `/api/invoice/{id}/pdf`                 | ADMIN        | The issued invoice as a PDF download (`409` for drafts) |
 | PUT    | `/api/invoice/{id}/collection`          | ADMIN        | `{collectedOn}`: the day the client paid an issued invoice, or `null` for pending (`409` for drafts) |
 | GET    | `/api/dashboard`                        | ADMIN        | Income, expenses and their monthly series for `?from=&to=`, plus what is pending collection |
+| GET    | `/api/taxes`                            | ADMIN        | IVA and IRPF estimated from the invoices of a quarter (`?year=&quarter=`, default: the current one) |
 | GET    | `/api/received-invoice`                 | ADMIN        | Collection of received invoices (`?limit=&offset=`) |
 | GET    | `/api/received-invoice/{id}`            | ADMIN        | Received invoice detail                        |
 | POST   | `/api/received-invoice`                 | ADMIN        | Record a supplier's invoice: supplier, number (required) and lines as entered (`409` until the fiscal data is set) |
@@ -361,6 +365,39 @@ export.
 Text uses the standard PDF fonts (Helvetica), which cover Spanish and the other Western European
 languages, `€` included. Characters outside that set (e.g. Polish or Greek names) print as a
 placeholder box.
+
+## Taxes
+
+*Impuestos* shows what the current quarter's taxes are heading for, estimated from the
+account's invoices: only final invoices issued within the quarter count (drafts never do),
+with the same per-line rounding as the invoices, so the figures match them to the cent
+(`app/taxes/`, `GET /api/taxes`).
+
+**IVA** (modelo 303)
+
+| Line | Computed as |
+|---|---|
+| IVA cobrado (*repercutido*) | The VAT of the issued invoices of the quarter |
+| IVA pagado (*soportado*) | The VAT of the received invoices of the quarter |
+| **IVA estimado** | cobrado − pagado. Negative: more VAT paid than collected, to carry forward |
+
+**IRPF** (modelo 130)
+
+| Line | Computed as |
+|---|---|
+| IRPF sobre ingresos | 20 % of the taxable base (without VAT) of the issued invoices to clients **outside Spain** — the country of the invoice's copy of the client's address is not `ES`. Clients abroad do not withhold IRPF, so it is paid in advance every quarter |
+| IRPF retenido por tus clientes | The IRPF withheld on the quarter's issued invoices (their retention): already paid on the freelancer's behalf |
+| **IRPF estimado** | sobre ingresos − retenido. Negative: clients withheld more than estimated, nothing to pay |
+
+For example, with a Spanish client invoiced 1129,81 € + 21 % VAT, another one invoiced
+527,20 € (VAT-exempt) withholding 15 %, a client in Germany invoiced 14.751,65 €, and an
+expense of 159,24 € + 21 % VAT: IVA cobrado 237,26 €, pagado 33,44 €, **estimado 203,82 €**;
+IRPF sobre ingresos 2950,33 €, retenido 79,08 €, **estimado 2871,25 €**
+(`tests/test_taxes.py` checks exactly this).
+
+These are estimates to plan ahead, not tax returns: they do not take into account previous
+quarters, non-deductible expenses, pro-rata VAT or other particular situations. The formulas
+live in `app/taxes/calculations.py`.
 
 ## Received invoices (expenses)
 
@@ -648,12 +685,14 @@ isofactu/
 │   │   ├── ai/                # AI module: each tenant's AI vendor (/api/ai-settings), provider + model catalogue
 │   │   ├── clients/           # Clients module: the client directory (/api/client)
 │   │   ├── dashboard/         # Dashboard module: income, expenses, pending collection (/api/dashboard)
+│   │   ├── taxes/             # Taxes module: IVA and IRPF estimated for a quarter (/api/taxes)
 │   │   ├── geo/               # Geo module: countries, provinces, cities (+ data/, see scripts/)
 │   │   ├── invoicing/         # Invoicing module (every row belongs to a tenant)
 │   │   │   ├── models.py      #   FiscalData, Serial, Subject (recipient copy), Invoice, InvoiceLine
 │   │   │   ├── value_objects.py  # InvoiceNumber, IdentificationDocument, Address, Issuer (composites)
 │   │   │   ├── document_type.py  # CIF | NIF | OTHER
 │   │   │   ├── invoice_kind.py   # ISSUED | RECEIVED (income / expense)
+│   │   │   ├── aggregates.py  #   Invoice amounts in SQL (same rounding as the models), for reports
 │   │   │   ├── extraction.py  #   Reading received invoices from PDF (the tenant's AI vendor, via LiteLLM) into a form draft
 │   │   │   ├── pdf.py         #   Rendering issued invoices as PDF (ReportLab)
 │   │   │   ├── invoice_state.py  # DRAFT | ISSUED
@@ -676,7 +715,7 @@ isofactu/
 │   │   ├── TenantApp.tsx      # ADMIN shell: dashboard, invoices (issued / received)...
 │   │   ├── AdminApp.tsx       # SUPER_ADMIN shell: accounts, settings
 │   │   ├── api/               # Typed API client (api, auth, admin) + contract types
-│   │   ├── pages/             # Login, ActivateAccount, Dashboard, Invoices, InvoiceForm, Clients, ClientForm, settings pages, admin/
+│   │   ├── pages/             # Login, ActivateAccount, Dashboard, Invoices, InvoiceForm, Taxes, Clients, ClientForm, settings pages, admin/
 │   │   ├── components/        # TopNav, forms, SearchSelect (react-select), party fields (client / supplier), dashboard widgets, invoice form / table, admin/
 │   │   └── lib/               # AuthProvider + useAuth, tiny router, formatting, useApi hook, party form helpers
 │   └── vite.config.ts         # Builds to ../public, proxies /api in dev
